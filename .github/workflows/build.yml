@@ -1,49 +1,66 @@
 name: Build ClipForge APK
-
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:   # permite ejecutarlo manualmente desde GitHub
-
+  workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
-      - name: Checkout código
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Instalar dependencias del sistema
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Android SDK oficial
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar build-tools y plataforma
+        run: |
+          sdkmanager "build-tools;34.0.0" "platforms;android-34" "platform-tools"
+          yes | sdkmanager --licenses 2>/dev/null || true
+
+      - name: Instalar sistema
         run: |
           sudo apt update
-          sudo apt install -y \
-            python3-pip git zip unzip \
-            openjdk-17-jdk \
-            autoconf libtool pkg-config \
-            libncurses5-dev libffi-dev libssl-dev cmake
+          sudo apt install -y python3-pip git zip unzip autoconf libtool \
+            pkg-config libncurses5-dev libffi-dev libssl-dev cmake wget
 
-      - name: Instalar Python deps
+      - name: Instalar Python
         run: |
           pip3 install --upgrade pip
-          pip3 install buildozer cython \
-            kivy==2.3.0 kivymd==1.2.0 \
-            pillow plyer
+          pip3 install buildozer cython==0.29.33 kivy==2.3.0 kivymd==1.2.0 pillow plyer
 
-      - name: Cache buildozer (acelera compilaciones futuras)
+      - name: Enlazar SDK para buildozer
+        run: |
+          SDK="$ANDROID_SDK_ROOT"
+          BSDK="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$(dirname $BSDK)"
+          ln -sf "$SDK" "$BSDK"
+          echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
+
+      - name: Cache buildozer
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.buildozer
-            .buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            buildozer-${{ runner.os }}-
+          path: ~/.buildozer
+          key: buildozer-${{ runner.os }}-v3-${{ hashFiles('buildozer.spec') }}
+
+      - name: Primera pasada (descarga dependencias)
+        run: buildozer android debug 2>&1 || true
+
+      - name: Parchar pyjnius Python 3
+        run: |
+          find $HOME/.buildozer -name "jnius_utils.pxi" 2>/dev/null | while read f; do
+            echo "Parchando: $f"
+            sed -i 's/isinstance(\(.*\), (int, long))/isinstance(\1, int)/g' "$f"
+            sed -i 's/isinstance(\(.*\), long)/isinstance(\1, int)/g' "$f"
+          done
 
       - name: Compilar APK
-        run: |
-          buildozer android debug 2>&1
+        run: buildozer android debug 2>&1
 
-      - name: Subir APK como artefacto
+      - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
           name: ClipForge-APK
