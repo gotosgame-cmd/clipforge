@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout código
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Instalar dependencias del sistema
         run: |
@@ -30,11 +30,22 @@ jobs:
             pillow plyer
 
       - name: Cache buildozer
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.buildozer
             .buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+
+      - name: Compilar APK (con licencias aceptadas)
+        run: yes | buildozer android debug 2>&1
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipForge-APK
+          path: bin/*.apk
+          retention-days: 7            .buildozer
           key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
 
       - name: Aceptar licencias Android SDK
