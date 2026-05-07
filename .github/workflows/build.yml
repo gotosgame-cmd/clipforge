@@ -1,0 +1,48 @@
+name: Build ClipForge APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            python3-pip git zip unzip \
+            openjdk-17-jdk \
+            autoconf libtool pkg-config \
+            libncurses5-dev libffi-dev libssl-dev cmake
+
+      - name: Instalar Python deps
+        run: |
+          pip3 install --upgrade pip
+          pip3 install buildozer cython \
+            kivy==2.3.0 kivymd==1.2.0 \
+            pillow plyer
+
+      - name: Cache buildozer
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+
+      - name: Compilar APK
+        run: buildozer android debug 2>&1
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipForge-APK
+          path: bin/*.apk
+          retention-days: 7
