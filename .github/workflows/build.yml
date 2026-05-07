@@ -10,10 +10,22 @@ jobs:
       - name: Instalar sistema
         run: |
           sudo apt update
-          sudo apt install -y python3-pip git zip unzip openjdk-17-jdk autoconf libtool pkg-config libncurses5-dev libffi-dev libssl-dev cmake
+          sudo apt install -y python3-pip git zip unzip openjdk-17-jdk autoconf libtool pkg-config libncurses5-dev libffi-dev libssl-dev cmake wget
 
       - name: Instalar Python
         run: pip3 install buildozer cython kivy==2.3.0 kivymd==1.2.0 pillow plyer
+
+      - name: Preparar Android SDK con licencias
+        run: |
+          SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$SDK_DIR/cmdline-tools"
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip
+          unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
+          mv /tmp/cmdtools/cmdline-tools "$SDK_DIR/cmdline-tools/latest"
+          SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+          yes | $SDKMANAGER --licenses 2>/dev/null || true
+          $SDKMANAGER "build-tools;37.0.0" "platforms;android-33" "platform-tools" 2>/dev/null || true
+          echo "ANDROID_HOME=$SDK_DIR" >> $GITHUB_ENV
 
       - name: Cache buildozer
         uses: actions/cache@v4
@@ -21,17 +33,7 @@ jobs:
           path: ~/.buildozer
           key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
 
-      - name: Primera pasada (descarga SDK)
-        run: buildozer android debug 2>&1 || true
-
-      - name: Aceptar licencias Android
-        run: |
-          SDK="$HOME/.buildozer/android/platform/android-sdk"
-          if [ -d "$SDK/cmdline-tools/latest/bin" ]; then
-            yes | $SDK/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
-          fi
-
-      - name: Compilar APK (pasada final)
+      - name: Compilar APK
         run: buildozer android debug 2>&1
 
       - name: Subir APK
