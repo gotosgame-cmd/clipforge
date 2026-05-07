@@ -7,19 +7,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configurar Java 17
+      - name: Configurar Java 11
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '11'
 
       - name: Configurar Android SDK oficial
         uses: android-actions/setup-android@v3
 
       - name: Instalar build-tools y plataforma
         run: |
-          sdkmanager "build-tools;34.0.0" "platforms;android-34" "platform-tools"
           yes | sdkmanager --licenses 2>/dev/null || true
+          sdkmanager "build-tools;33.0.2" "platforms;android-33" "platform-tools"
 
       - name: Instalar sistema
         run: |
@@ -34,17 +34,16 @@ jobs:
 
       - name: Enlazar SDK para buildozer
         run: |
-          SDK="$ANDROID_SDK_ROOT"
           BSDK="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$(dirname $BSDK)"
-          ln -sf "$SDK" "$BSDK"
-          echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
+          ln -sf "$ANDROID_SDK_ROOT" "$BSDK"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
 
       - name: Cache buildozer
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-${{ runner.os }}-v3-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-${{ runner.os }}-v4-${{ hashFiles('buildozer.spec') }}
 
       - name: Primera pasada (descarga dependencias)
         run: buildozer android debug 2>&1 || true
