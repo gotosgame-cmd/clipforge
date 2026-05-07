@@ -12,6 +12,7 @@ from kivy.config import Config
 Config.set("graphics", "width",  "420")
 Config.set("graphics", "height", "860")
 Config.set("input", "mouse", "mouse,multitouch_on_demand")
+Config.set("kivy", "exit_on_escape", "0")
 
 from kivy.clock   import Clock
 from kivy.lang    import Builder
@@ -146,8 +147,15 @@ KV = """
 MDScreen:
     md_bg_color: app.c_bg
 
-    MDScrollView:
+    ScrollView:
+        id: main_scroll
         do_scroll_x: False
+        do_scroll_y: True
+        bar_width: dp(4)
+        bar_color: app.c_muted
+        bar_inactive_color: [0,0,0,0]
+        scroll_type: ['bars', 'content']
+        effect_cls: 'ScrollEffect'
 
         MDBoxLayout:
             orientation: 'vertical'
@@ -720,24 +728,29 @@ class ClipForgeApp(MDApp):
             self._show_dialog("Error", "plyer no disponible. Instala: pip install plyer")
 
     def _pick_android(self, mime_type, callback):
-        """Selector de archivos nativo de Android usando Intent."""
+        """Selector de archivos nativo usando FileChooserActivity de Kivy Android."""
         try:
             from android import activity  # type: ignore
-            from jnius import autoclass, cast  # type: ignore
+            from jnius import autoclass   # type: ignore
 
-            Intent    = autoclass("android.content.Intent")
+            self._pending_callback  = callback
+            self._pending_mime      = mime_type
+
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            Intent         = autoclass("android.content.Intent")
 
-            intent = Intent(Intent.ACTION_GET_CONTENT)
+            intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
             intent.setType(mime_type)
             intent.addCategory(Intent.CATEGORY_OPENABLE)
+            intent.putExtra(Intent.EXTRA_LOCAL_ONLY, True)
 
-            self._pending_callback = callback
+            # Registrar callback ANTES de lanzar el intent
             activity.bind(on_activity_result=self._on_activity_result)
             PythonActivity.mActivity.startActivityForResult(intent, 1001)
+
         except Exception as exc:
-            self._log(f"Error abriendo selector: {exc}")
-            self._show_dialog("Error", f"No se pudo abrir el selector:\n{exc}")
+            import traceback
+            self._show_dialog("Error abriendo selector", traceback.format_exc())
 
     def _on_activity_result(self, request_code, result_code, intent):
         try:
@@ -746,18 +759,43 @@ class ClipForgeApp(MDApp):
 
             RESULT_OK = -1
             if result_code != RESULT_OK or intent is None:
+                self._log("Selector cancelado o sin resultado")
                 return
 
             uri = intent.getData()
             if uri is None:
+                self._show_dialog("Error", "No se obtuvo URI del archivo")
                 return
 
-            # Convertir URI a ruta real
+            # Tomar persistencia del URI para accederlo luego
+            try:
+                from jnius import autoclass  # type: ignore
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                flags = intent.getFlags()
+                from jnius import autoclass as jcls
+                Intent = jcls("android.content.Intent")
+                persist_flags = (
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+                PythonActivity.mActivity.getContentResolver().takePersistableUriPermission(
+                    uri, persist_flags & flags
+                )
+            except Exception:
+                pass  # No crítico
+
+            self._log(f"URI recibido: {uri.toString()}")
             path = self._uri_to_path(uri)
+            self._log(f"Ruta resuelta: {path}")
+
             if path and hasattr(self, "_pending_callback"):
-                self._pending_callback([path])
+                Clock.schedule_once(lambda dt: self._pending_callback([path]))
+            else:
+                self._show_dialog("Error", "No se pudo obtener la ruta del archivo")
+
         except Exception as exc:
-            self._log(f"Error procesando selección: {exc}")
+            import traceback
+            self._show_dialog("Error activity result", traceback.format_exc())
 
     def _uri_to_path(self, uri) -> Optional[str]:
         """Convierte un Android URI a ruta de archivo."""
