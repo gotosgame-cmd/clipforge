@@ -15,16 +15,24 @@ jobs:
       - name: Instalar Python
         run: pip3 install buildozer cython kivy==2.3.0 kivymd==1.2.0 pillow plyer
 
-      - name: Preparar Android SDK con licencias
+      - name: Preparar Android SDK
         run: |
           SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$SDK_DIR/cmdline-tools"
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip
           unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
           mv /tmp/cmdtools/cmdline-tools "$SDK_DIR/cmdline-tools/latest"
+
           SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+
+          # Symlink a la ruta vieja que buildozer espera
+          mkdir -p "$SDK_DIR/tools/bin"
+          ln -sf "$SDKMANAGER" "$SDK_DIR/tools/bin/sdkmanager"
+
+          # Aceptar licencias e instalar paquetes
           yes | $SDKMANAGER --licenses 2>/dev/null || true
           $SDKMANAGER "build-tools;37.0.0" "platforms;android-33" "platform-tools" 2>/dev/null || true
+
           echo "ANDROID_HOME=$SDK_DIR" >> $GITHUB_ENV
 
       - name: Cache buildozer
