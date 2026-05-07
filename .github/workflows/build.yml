@@ -7,12 +7,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compilar APK con Docker buildozer
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Instalar sistema
         run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/home/user/hostcwd \
-            kivy/buildozer:latest \
-            android debug
+          sudo apt update
+          sudo apt install -y python3-pip git zip unzip autoconf libtool \
+            pkg-config libncurses5-dev libffi-dev libssl-dev cmake wget
+
+      - name: Instalar Python
+        run: |
+          pip3 install --upgrade pip
+          pip3 install buildozer cython==0.29.33 kivy==2.3.0 kivymd==1.2.0 pillow plyer
+
+      - name: Preparar Android SDK
+        run: |
+          SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$SDK_DIR/cmdline-tools"
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip
+          unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
+          mv /tmp/cmdtools/cmdline-tools "$SDK_DIR/cmdline-tools/latest"
+          SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+          mkdir -p "$SDK_DIR/tools/bin"
+          ln -sf "$SDKMANAGER" "$SDK_DIR/tools/bin/sdkmanager"
+          yes | $SDKMANAGER --licenses 2>/dev/null || true
+          $SDKMANAGER "build-tools;33.0.2" "platforms;android-33" "platform-tools" 2>/dev/null || true
+          echo "ANDROID_HOME=$SDK_DIR" >> $GITHUB_ENV
+
+      - name: Cache buildozer
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: buildozer-${{ runner.os }}-v5-${{ hashFiles('buildozer.spec') }}
+
+      - name: Primera pasada (descarga dependencias)
+        run: buildozer android debug 2>&1 || true
+
+      - name: Parchar pyjnius Python 3
+        run: |
+          find $HOME/.buildozer -name "jnius_utils.pxi" 2>/dev/null | while read f; do
+            echo "Parchando: $f"
+            sed -i 's/isinstance(\(.*\), (int, long))/isinstance(\1, int)/g' "$f"
+            sed -i 's/isinstance(\(.*\), long)/isinstance(\1, int)/g' "$f"
+          done
+
+      - name: Compilar APK
+        run: buildozer android debug 2>&1
 
       - name: Subir APK
         uses: actions/upload-artifact@v4
