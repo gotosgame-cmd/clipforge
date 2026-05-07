@@ -607,13 +607,36 @@ class ClipForgeApp(MDApp):
         return Builder.load_string(KV)
 
     def on_start(self):
-        # En Android, solicitar permisos de almacenamiento
         if sys.platform == "android":
-            from android.permissions import request_permissions, Permission  # type: ignore
-            request_permissions([
-                Permission.READ_EXTERNAL_STORAGE,
-                Permission.WRITE_EXTERNAL_STORAGE,
-            ])
+            self._request_android_permissions()
+
+    def _request_android_permissions(self):
+        try:
+            from android.permissions import request_permissions, Permission, check_permission  # type: ignore
+            import android  # type: ignore
+
+            # Android 13+ (API 33+) usa permisos granulares por tipo de media
+            perms = []
+            try:
+                perms.append(Permission.READ_MEDIA_VIDEO)
+                perms.append(Permission.READ_MEDIA_IMAGES)
+            except AttributeError:
+                # Android 12 o menor — usar permiso general
+                perms.append(Permission.READ_EXTERNAL_STORAGE)
+
+            perms.append(Permission.WRITE_EXTERNAL_STORAGE)
+            request_permissions(perms, self._on_permissions_result)
+        except Exception as exc:
+            self._log(f"Permisos: {exc}")
+
+    def _on_permissions_result(self, permissions, grants):
+        all_granted = all(grants)
+        if not all_granted:
+            self._show_dialog(
+                "Permisos necesarios",
+                "La app necesita acceso a archivos para funcionar.\n"
+                "Ve a Ajustes → Apps → ClipForge → Permisos y actívalos manualmente."
+            )
 
     # ── Resolución de binarios ───────────────────────────────────────────────
     def _resolve_binary(self, name: str) -> Path:
@@ -685,7 +708,9 @@ class ClipForgeApp(MDApp):
 
     # ── Selectores de archivos ───────────────────────────────────────────────
     def pick_video(self):
-        if PLYER_OK:
+        if sys.platform == "android":
+            self._pick_android("video/*", self._on_video_selected)
+        elif PLYER_OK:
             filechooser.open_file(
                 on_selection=self._on_video_selected,
                 filters=["*.mp4", "*.mov", "*.mkv", "*.avi", "*.m4v"],
@@ -693,6 +718,98 @@ class ClipForgeApp(MDApp):
             )
         else:
             self._show_dialog("Error", "plyer no disponible. Instala: pip install plyer")
+
+    def _pick_android(self, mime_type, callback):
+        """Selector de archivos nativo de Android usando Intent."""
+        try:
+            from android import activity  # type: ignore
+            from jnius import autoclass, cast  # type: ignore
+
+            Intent    = autoclass("android.content.Intent")
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+
+            intent = Intent(Intent.ACTION_GET_CONTENT)
+            intent.setType(mime_type)
+            intent.addCategory(Intent.CATEGORY_OPENABLE)
+
+            self._pending_callback = callback
+            activity.bind(on_activity_result=self._on_activity_result)
+            PythonActivity.mActivity.startActivityForResult(intent, 1001)
+        except Exception as exc:
+            self._log(f"Error abriendo selector: {exc}")
+            self._show_dialog("Error", f"No se pudo abrir el selector:\n{exc}")
+
+    def _on_activity_result(self, request_code, result_code, intent):
+        try:
+            from android import activity  # type: ignore
+            activity.unbind(on_activity_result=self._on_activity_result)
+
+            RESULT_OK = -1
+            if result_code != RESULT_OK or intent is None:
+                return
+
+            uri = intent.getData()
+            if uri is None:
+                return
+
+            # Convertir URI a ruta real
+            path = self._uri_to_path(uri)
+            if path and hasattr(self, "_pending_callback"):
+                self._pending_callback([path])
+        except Exception as exc:
+            self._log(f"Error procesando selección: {exc}")
+
+    def _uri_to_path(self, uri) -> Optional[str]:
+        """Convierte un Android URI a ruta de archivo."""
+        try:
+            from jnius import autoclass  # type: ignore
+            context_class  = autoclass("android.content.Context")
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            context        = PythonActivity.mActivity
+
+            # Intentar resolver como ruta real
+            cursor = context.getContentResolver().query(uri, None, None, None, None)
+            if cursor and cursor.moveToFirst():
+                idx = cursor.getColumnIndex("_data")
+                if idx >= 0:
+                    path = cursor.getString(idx)
+                    cursor.close()
+                    if path:
+                        return path
+                cursor.close()
+
+            # Fallback: copiar a temporal
+            return self._copy_uri_to_temp(uri, context)
+        except Exception as exc:
+            self._log(f"URI a ruta falló: {exc}")
+            return str(uri)
+
+    def _copy_uri_to_temp(self, uri, context) -> Optional[str]:
+        """Copia un archivo desde URI a un temp file accesible."""
+        try:
+            from jnius import autoclass  # type: ignore
+            import shutil as _shutil
+
+            input_stream = context.getContentResolver().openInputStream(uri)
+            suffix = ".mp4"
+            fd, temp_path = tempfile.mkstemp(suffix=suffix, dir=self.app_data_dir)
+            os.close(fd)
+
+            # Leer en chunks
+            FileOutputStream = autoclass("java.io.FileOutputStream")
+            fos = FileOutputStream(temp_path)
+            buf = bytearray(65536)
+            while True:
+                n = input_stream.read(buf)
+                if n < 0:
+                    break
+                fos.write(buf, 0, n)
+            fos.close()
+            input_stream.close()
+            return temp_path
+        except Exception as exc:
+            self._log(f"Copia temporal falló: {exc}")
+            return None
 
     def _on_video_selected(self, selection):
         if not selection:
@@ -704,7 +821,25 @@ class ClipForgeApp(MDApp):
         threading.Thread(target=self._generate_preview, args=(path,), daemon=True).start()
 
     def pick_out(self):
-        if PLYER_OK:
+        if sys.platform == "android":
+            # En Android usamos la carpeta de Movies como salida por defecto
+            try:
+                from jnius import autoclass  # type: ignore
+                Environment = autoclass("android.os.Environment")
+                movies_dir  = Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_MOVIES
+                ).getAbsolutePath()
+                out = str(Path(movies_dir) / "ClipForge")
+                Path(out).mkdir(parents=True, exist_ok=True)
+                Clock.schedule_once(lambda dt: setattr(self.root.ids.out_field, "text", out))
+                self._log(f"Salida: {out}")
+                self._show_dialog("Carpeta de salida", f"Los clips se guardarán en:\n{out}")
+            except Exception as exc:
+                fallback = str(self.app_data_dir / "output")
+                Path(fallback).mkdir(parents=True, exist_ok=True)
+                Clock.schedule_once(lambda dt: setattr(self.root.ids.out_field, "text", fallback))
+                self._log(f"Salida (fallback): {fallback}")
+        elif PLYER_OK:
             filechooser.choose_dir(
                 on_selection=self._on_out_selected,
                 multiple=False,
@@ -720,7 +855,9 @@ class ClipForgeApp(MDApp):
         self._log(f"Salida: {path}")
 
     def pick_wm(self):
-        if PLYER_OK:
+        if sys.platform == "android":
+            self._pick_android("image/*", self._on_wm_selected)
+        elif PLYER_OK:
             filechooser.open_file(
                 on_selection=self._on_wm_selected,
                 filters=["*.png", "*.jpg", "*.jpeg"],
