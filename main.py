@@ -120,7 +120,15 @@ class TouchScrollView(ScrollView):
 KV = """
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
-#:import TouchScrollView __main__.TouchScrollView
+
+<FullScroll@ScrollView>:
+    do_scroll_x: False
+    do_scroll_y: True
+    bar_width: dp(3)
+    bar_color: 0.58, 0.63, 0.72, 1
+    bar_inactive_color: 0, 0, 0, 0
+    scroll_type: ['bars', 'content']
+    smooth_scroll_end: 10
 
 <SectionCard@MDCard>:
     orientation: 'vertical'
@@ -162,15 +170,8 @@ KV = """
 MDScreen:
     md_bg_color: app.c_bg
 
-    TouchScrollView:
+    FullScroll:
         id: main_scroll
-        do_scroll_x: False
-        do_scroll_y: True
-        bar_width: dp(3)
-        bar_color: app.c_muted
-        bar_inactive_color: [0,0,0,0]
-        scroll_type: ['bars', 'content']
-        smooth_scroll_end: 10
 
         MDBoxLayout:
             orientation: 'vertical'
@@ -732,21 +733,19 @@ class ClipForgeApp(MDApp):
     # ── Selectores de archivos ───────────────────────────────────────────────
     def pick_video(self):
         try:
+            from plyer import filechooser as fc
             if sys.platform == "android":
-                from plyer import filechooser  # type: ignore
-                filechooser.open_file(
+                fc.open_file(
                     on_selection=self._on_video_selected,
                     filters=["video/*"],
                     multiple=False,
                 )
-            elif PLYER_OK:
-                filechooser.open_file(
+            else:
+                fc.open_file(
                     on_selection=self._on_video_selected,
                     filters=["*.mp4", "*.mov", "*.mkv", "*.avi", "*.m4v"],
                     multiple=False,
                 )
-            else:
-                self._show_dialog("Error", "plyer no disponible.")
         except Exception as exc:
             import traceback
             self._show_dialog("Error al abrir video", traceback.format_exc())
@@ -911,21 +910,19 @@ class ClipForgeApp(MDApp):
 
     def pick_wm(self):
         try:
+            from plyer import filechooser as fc
             if sys.platform == "android":
-                from plyer import filechooser  # type: ignore
-                filechooser.open_file(
+                fc.open_file(
                     on_selection=self._on_wm_selected,
                     filters=["image/*"],
                     multiple=False,
                 )
-            elif PLYER_OK:
-                filechooser.open_file(
+            else:
+                fc.open_file(
                     on_selection=self._on_wm_selected,
                     filters=["*.png", "*.jpg", "*.jpeg"],
                     multiple=False,
                 )
-            else:
-                self._show_dialog("Error", "plyer no disponible.")
         except Exception as exc:
             self._show_dialog("Error al abrir imagen", str(exc))
 
