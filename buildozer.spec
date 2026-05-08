@@ -39,7 +39,6 @@ android.permissions =
     READ_MEDIA_AUDIO,
     READ_EXTERNAL_STORAGE,
     WRITE_EXTERNAL_STORAGE,
-    MANAGE_EXTERNAL_STORAGE
 
 android.minapi = 26
 android.targetapi = 33
