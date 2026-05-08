@@ -658,50 +658,78 @@ class ClipForgeApp(MDApp):
 
     def on_start(self):
         if sys.platform == "android":
-            self._request_android_permissions()
+            # Pequeño delay para que la UI cargue antes de pedir permisos
+            Clock.schedule_once(lambda dt: self._request_android_permissions(), 1)
 
     def _request_android_permissions(self):
         try:
-            from android.permissions import request_permissions, Permission  # type: ignore
+            from android.permissions import request_permissions, Permission, check_permission  # type: ignore
 
-            perms = []
+            perms = [Permission.WRITE_EXTERNAL_STORAGE]
             try:
-                perms.append(Permission.READ_MEDIA_VIDEO)
-                perms.append(Permission.READ_MEDIA_IMAGES)
+                perms += [Permission.READ_MEDIA_VIDEO, Permission.READ_MEDIA_IMAGES]
             except AttributeError:
                 perms.append(Permission.READ_EXTERNAL_STORAGE)
-            perms.append(Permission.WRITE_EXTERNAL_STORAGE)
-            request_permissions(perms, self._on_permissions_result)
 
-            # MANAGE_EXTERNAL_STORAGE permite leer TODO el teléfono
-            # Requiere abrir ajustes manualmente en Android 11+
-            try:
-                from jnius import autoclass  # type: ignore
-                Environment    = autoclass("android.os.Environment")
-                if not Environment.isExternalStorageManager():
-                    Intent         = autoclass("android.content.Intent")
-                    Settings       = autoclass("android.provider.Settings")
-                    Uri            = autoclass("android.net.Uri")
-                    PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                    intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                    intent.setData(Uri.parse(
-                        f"package:{PythonActivity.mActivity.getPackageName()}"
-                    ))
-                    PythonActivity.mActivity.startActivity(intent)
-            except Exception as e:
-                self._log(f"MANAGE_EXTERNAL_STORAGE: {e}")
+            def on_result(permissions, grants):
+                granted = all(grants)
+                self._log(f"Permisos media: {granted}")
+                # Verificar si tiene acceso total al almacenamiento
+                self._check_manage_storage()
+
+            request_permissions(perms, on_result)
 
         except Exception as exc:
-            self._log(f"Permisos: {exc}")
+            self._log(f"Error permisos: {exc}")
+
+    def _check_manage_storage(self):
+        """Verifica y pide MANAGE_EXTERNAL_STORAGE si no está activo."""
+        try:
+            from jnius import autoclass  # type: ignore
+            Environment = autoclass("android.os.Environment")
+            if Environment.isExternalStorageManager():
+                self._log("Acceso total al almacenamiento: OK")
+                return
+            # No tiene acceso total — mostrar diálogo explicativo
+            Clock.schedule_once(lambda dt: self._show_storage_dialog(), 0.5)
+        except Exception as e:
+            self._log(f"Check storage: {e}")
+
+    def _show_storage_dialog(self):
+        """Muestra diálogo pidiendo acceso a todos los archivos."""
+        from kivymd.uix.button import MDFlatButton, MDRaisedButton
+
+        def abrir_ajustes(*a):
+            dlg.dismiss()
+            try:
+                from jnius import autoclass  # type: ignore
+                Intent         = autoclass("android.content.Intent")
+                Settings       = autoclass("android.provider.Settings")
+                Uri            = autoclass("android.net.Uri")
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                pkg = PythonActivity.mActivity.getPackageName()
+                intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.setData(Uri.parse(f"package:{pkg}"))
+                PythonActivity.mActivity.startActivity(intent)
+            except Exception as e:
+                self._log(f"Error abriendo ajustes: {e}")
+
+        btn_ok  = MDRaisedButton(text="Ir a Ajustes", md_bg_color=(0.13, 0.77, 0.37, 1))
+        btn_no  = MDFlatButton(text="Ahora no")
+        dlg = MDDialog(
+            title="Permiso necesario",
+            text=(
+                "Para ver tus videos ClipForge necesita acceso a todos los archivos.\n\n"
+                "Toca 'Ir a Ajustes' → activa 'Permitir acceso a todos los archivos'."
+            ),
+            buttons=[btn_no, btn_ok],
+        )
+        btn_ok.bind(on_release=abrir_ajustes)
+        btn_no.bind(on_release=lambda *a: dlg.dismiss())
+        dlg.open()
 
     def _on_permissions_result(self, permissions, grants):
-        all_granted = all(grants)
-        if not all_granted:
-            self._show_dialog(
-                "Permisos necesarios",
-                "La app necesita acceso a archivos para funcionar.\n"
-                "Ve a Ajustes → Apps → ClipForge → Permisos y actívalos manualmente."
-            )
+        pass  # Manejado en _request_android_permissions
 
     # ── Resolución de binarios ───────────────────────────────────────────────
     def _resolve_binary(self, name: str) -> Path:
