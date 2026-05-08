@@ -1,6 +1,6 @@
 """
-ClipForge Studio — Versión Android corregida
-Selector de videos corregido para abrir galería / archivos en Android.
+ClipForge Studio — Versión Android
+Kivy + KivyMD
 """
 
 import math
@@ -21,17 +21,36 @@ Config.set("input", "mouse", "mouse,multitouch_on_demand")
 Config.set("kivy", "exit_on_escape", "0")
 
 from kivy.clock import Clock
+from kivy.factory import Factory
 from kivy.lang import Builder
 from kivy.metrics import dp, sp
 from kivy.uix.image import Image as KivyImage
 from kivy.uix.scrollview import ScrollView
-from kivy.factory import Factory
 
 from kivymd.app import MDApp
-from kivymd.uix.button import MDRaisedButton, MDFlatButton
+from kivymd.uix.button import MDFlatButton, MDRaisedButton
 from kivymd.uix.dialog import MDDialog
 from kivymd.uix.menu import MDDropdownMenu
 
+try:
+    from plyer import filechooser
+    PLYER_OK = True
+except Exception:
+    PLYER_OK = False
+
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+    DRIVE_ERR = None
+except Exception as exc:
+    Request = Credentials = InstalledAppFlow = build = MediaFileUpload = None
+    DRIVE_ERR = exc
+
+
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 QUALITY_PRESETS = {
     "Alta": {"preset": "slow", "crf": 17},
@@ -52,6 +71,51 @@ class UserCancelled(Exception):
     pass
 
 
+class DriveUploader:
+    def __init__(self, credentials_file: Path, token_file: Path):
+        self.credentials_file = credentials_file
+        self.token_file = token_file
+        self.service = None
+
+    def auth(self):
+        if DRIVE_ERR is not None:
+            raise RuntimeError("Faltan dependencias de Google Drive.") from DRIVE_ERR
+
+        if not self.credentials_file.exists():
+            raise FileNotFoundError(f"No se encontró credentials.json en:\n{self.credentials_file}")
+
+        creds = None
+
+        if self.token_file.exists():
+            creds = Credentials.from_authorized_user_file(str(self.token_file), SCOPES)
+
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        elif not creds or not creds.valid:
+            flow = InstalledAppFlow.from_client_secrets_file(str(self.credentials_file), SCOPES)
+            creds = flow.run_local_server(port=0)
+
+        self.token_file.parent.mkdir(parents=True, exist_ok=True)
+        self.token_file.write_text(creds.to_json(), encoding="utf-8")
+        self.service = build("drive", "v3", credentials=creds)
+        return self.service
+
+    def upload_file(self, file_path: Path, folder_id: Optional[str] = None) -> dict:
+        service = self.service or self.auth()
+        metadata = {"name": file_path.name}
+
+        if folder_id:
+            metadata["parents"] = [folder_id]
+
+        media = MediaFileUpload(str(file_path), mimetype="video/mp4", resumable=False)
+
+        return service.files().create(
+            body=metadata,
+            media_body=media,
+            fields="id,name,webViewLink",
+        ).execute()
+
+
 class TouchScrollView(ScrollView):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -59,6 +123,7 @@ class TouchScrollView(ScrollView):
         self.do_scroll_y = True
         self.scroll_type = ["bars", "content"]
         self.bar_width = dp(3)
+        self.smooth_scroll_end = 10
 
     def on_touch_down(self, touch):
         touch.ud["scroll_start_y"] = touch.y
@@ -69,11 +134,13 @@ class TouchScrollView(ScrollView):
         if "scroll_start_y" in touch.ud:
             dy = abs(touch.y - touch.ud["scroll_start_y"])
             dx = abs(touch.x - touch.ud["scroll_start_x"])
+
             if dy > 10 and dy > dx:
                 if self.collide_point(*touch.pos):
                     self.scroll_y -= touch.dy / self.height
                     self.scroll_y = max(0, min(1, self.scroll_y))
                     return True
+
         return super().on_touch_move(touch)
 
 
@@ -85,7 +152,7 @@ KV = """
 #:import sp kivy.metrics.sp
 
 <SectionCard@MDCard>:
-    orientation: "vertical"
+    orientation: 'vertical'
     padding: dp(10)
     spacing: dp(8)
     size_hint_y: None
@@ -95,23 +162,23 @@ KV = """
     elevation: 0
 
 <SectionTitle@MDLabel>:
-    font_style: "Subtitle1"
+    font_style: 'Subtitle1'
     bold: True
     size_hint_y: None
     height: dp(30)
-    theme_text_color: "Custom"
+    theme_text_color: 'Custom'
     text_color: app.c_text
 
 <MutedLabel@MDLabel>:
-    theme_text_color: "Custom"
+    theme_text_color: 'Custom'
     text_color: app.c_muted
     font_size: sp(13)
     size_hint: None, None
     size: dp(78), dp(44)
-    valign: "middle"
+    valign: 'middle'
 
 <DarkField@MDTextField>:
-    mode: "fill"
+    mode: 'fill'
     size_hint_y: None
     height: dp(52)
     font_size: sp(13)
@@ -128,37 +195,37 @@ MDScreen:
         id: main_scroll
 
         MDBoxLayout:
-            orientation: "vertical"
+            orientation: 'vertical'
             padding: [dp(12), dp(12)]
             spacing: dp(10)
             size_hint_y: None
             height: self.minimum_height
 
             MDBoxLayout:
-                orientation: "vertical"
+                orientation: 'vertical'
                 size_hint_y: None
                 height: dp(58)
 
                 MDLabel:
-                    text: "ClipForge Studio"
-                    font_style: "H5"
+                    text: 'ClipForge Studio'
+                    font_style: 'H5'
                     bold: True
-                    theme_text_color: "Custom"
+                    theme_text_color: 'Custom'
                     text_color: app.c_text
                     size_hint_y: None
                     height: dp(38)
 
                 MDLabel:
-                    text: "Versión Android"
-                    font_style: "Caption"
-                    theme_text_color: "Custom"
+                    text: 'Versión Android'
+                    font_style: 'Caption'
+                    theme_text_color: 'Custom'
                     text_color: app.c_muted
                     size_hint_y: None
                     height: dp(20)
 
             SectionCard:
                 SectionTitle:
-                    text: "Archivos"
+                    text: 'Archivos'
 
                 MDBoxLayout:
                     size_hint_y: None
@@ -167,15 +234,15 @@ MDScreen:
 
                     DarkField:
                         id: video_field
-                        hint_text: "Selecciona un video"
+                        hint_text: 'Selecciona un video'
                         size_hint_x: 1
 
                     MDRaisedButton:
-                        text: "Buscar"
+                        text: 'Buscar'
                         md_bg_color: app.c_button
                         size_hint: None, None
                         size: dp(88), dp(40)
-                        pos_hint: {"center_y": .5}
+                        pos_hint: {'center_y': .5}
                         on_release: app.pick_video()
 
                 MDBoxLayout:
@@ -188,9 +255,9 @@ MDScreen:
 
                     MDLabel:
                         id: preview_label
-                        text: "Vista previa"
-                        halign: "center"
-                        theme_text_color: "Custom"
+                        text: 'Vista previa'
+                        halign: 'center'
+                        theme_text_color: 'Custom'
                         text_color: app.c_muted
 
                 MDBoxLayout:
@@ -200,15 +267,15 @@ MDScreen:
 
                     DarkField:
                         id: out_field
-                        hint_text: "Carpeta de salida"
+                        hint_text: 'Carpeta de salida'
                         size_hint_x: 1
 
                     MDRaisedButton:
-                        text: "Carpeta"
+                        text: 'Carpeta'
                         md_bg_color: app.c_button
                         size_hint: None, None
                         size: dp(88), dp(40)
-                        pos_hint: {"center_y": .5}
+                        pos_hint: {'center_y': .5}
                         on_release: app.pick_out()
 
                 MDBoxLayout:
@@ -218,25 +285,25 @@ MDScreen:
 
                     DarkField:
                         id: wm_field
-                        hint_text: "Marca de agua opcional"
+                        hint_text: 'Marca de agua opcional'
                         size_hint_x: 1
 
                     MDRaisedButton:
-                        text: "Imagen"
+                        text: 'Imagen'
                         md_bg_color: app.c_button
                         size_hint: None, None
                         size: dp(88), dp(40)
-                        pos_hint: {"center_y": .5}
+                        pos_hint: {'center_y': .5}
                         on_release: app.pick_wm()
 
             SectionCard:
                 SectionTitle:
-                    text: "Clips"
+                    text: 'Clips'
 
                 DarkField:
                     id: prefix_field
-                    hint_text: "Prefijo de clips"
-                    text: "Parte"
+                    hint_text: 'Prefijo de clips'
+                    text: 'Parte'
 
                 MDBoxLayout:
                     size_hint_y: None
@@ -244,11 +311,11 @@ MDScreen:
                     spacing: dp(8)
 
                     MutedLabel:
-                        text: "Calidad"
+                        text: 'Calidad'
 
                     MDRaisedButton:
                         id: quality_btn
-                        text: "Alta"
+                        text: 'Alta'
                         md_bg_color: app.c_field
                         size_hint_x: 1
                         on_release: app.show_quality_menu(self)
@@ -259,7 +326,7 @@ MDScreen:
                     spacing: dp(8)
 
                     MutedLabel:
-                        text: "Duración"
+                        text: 'Duración'
 
                     MDSlider:
                         id: dur_slider
@@ -272,12 +339,12 @@ MDScreen:
 
                     MDLabel:
                         id: dur_label
-                        text: "10 s"
+                        text: '10 s'
                         size_hint: None, None
                         size: dp(44), dp(44)
                         bold: True
-                        valign: "middle"
-                        theme_text_color: "Custom"
+                        valign: 'middle'
+                        theme_text_color: 'Custom'
                         text_color: app.c_text
 
                 MDBoxLayout:
@@ -290,15 +357,15 @@ MDScreen:
                         radius: [dp(6)]
                         padding: dp(8)
                         size_hint_x: 1
-                        orientation: "vertical"
+                        orientation: 'vertical'
                         spacing: dp(4)
 
                         MDLabel:
-                            text: "Inicio"
+                            text: 'Inicio'
                             bold: True
                             size_hint_y: None
                             height: dp(24)
-                            theme_text_color: "Custom"
+                            theme_text_color: 'Custom'
                             text_color: app.c_text
 
                         MDBoxLayout:
@@ -308,39 +375,39 @@ MDScreen:
 
                             DarkField:
                                 id: ini_m
-                                text: "0"
-                                hint_text: "min"
-                                input_filter: "int"
+                                text: '0'
+                                hint_text: 'min'
+                                input_filter: 'int'
 
                             MDLabel:
-                                text: ":"
+                                text: ':'
                                 size_hint: None, None
                                 size: dp(16), dp(52)
-                                halign: "center"
+                                halign: 'center'
                                 bold: True
-                                theme_text_color: "Custom"
+                                theme_text_color: 'Custom'
                                 text_color: app.c_text
 
                             DarkField:
                                 id: ini_s
-                                text: "0"
-                                hint_text: "seg"
-                                input_filter: "int"
+                                text: '0'
+                                hint_text: 'seg'
+                                input_filter: 'int'
 
                     MDCard:
                         md_bg_color: app.c_surface2
                         radius: [dp(6)]
                         padding: dp(8)
                         size_hint_x: 1
-                        orientation: "vertical"
+                        orientation: 'vertical'
                         spacing: dp(4)
 
                         MDLabel:
-                            text: "Fin 0=total"
+                            text: 'Fin 0=total'
                             bold: True
                             size_hint_y: None
                             height: dp(24)
-                            theme_text_color: "Custom"
+                            theme_text_color: 'Custom'
                             text_color: app.c_text
 
                         MDBoxLayout:
@@ -350,28 +417,28 @@ MDScreen:
 
                             DarkField:
                                 id: fin_m
-                                text: "0"
-                                hint_text: "min"
-                                input_filter: "int"
+                                text: '0'
+                                hint_text: 'min'
+                                input_filter: 'int'
 
                             MDLabel:
-                                text: ":"
+                                text: ':'
                                 size_hint: None, None
                                 size: dp(16), dp(52)
-                                halign: "center"
+                                halign: 'center'
                                 bold: True
-                                theme_text_color: "Custom"
+                                theme_text_color: 'Custom'
                                 text_color: app.c_text
 
                             DarkField:
                                 id: fin_s
-                                text: "0"
-                                hint_text: "seg"
-                                input_filter: "int"
+                                text: '0'
+                                hint_text: 'seg'
+                                input_filter: 'int'
 
             SectionCard:
                 SectionTitle:
-                    text: "Marca de agua"
+                    text: 'Marca de agua'
 
                 MDBoxLayout:
                     size_hint_y: None
@@ -379,11 +446,11 @@ MDScreen:
                     spacing: dp(8)
 
                     MutedLabel:
-                        text: "Posición"
+                        text: 'Posición'
 
                     MDRaisedButton:
                         id: wm_pos_btn
-                        text: "Arriba derecha"
+                        text: 'Arriba derecha'
                         md_bg_color: app.c_field
                         size_hint_x: 1
                         on_release: app.show_wm_pos_menu(self)
@@ -394,7 +461,7 @@ MDScreen:
                     spacing: dp(8)
 
                     MutedLabel:
-                        text: "Tamaño"
+                        text: 'Tamaño'
 
                     MDSlider:
                         id: wm_size_slider
@@ -407,12 +474,12 @@ MDScreen:
 
                     MDLabel:
                         id: wm_size_label
-                        text: "120 px"
+                        text: '120 px'
                         size_hint: None, None
                         size: dp(56), dp(44)
                         bold: True
-                        valign: "middle"
-                        theme_text_color: "Custom"
+                        valign: 'middle'
+                        theme_text_color: 'Custom'
                         text_color: app.c_text
 
                 MDBoxLayout:
@@ -421,7 +488,7 @@ MDScreen:
                     spacing: dp(8)
 
                     MutedLabel:
-                        text: "Opacidad"
+                        text: 'Opacidad'
 
                     MDSlider:
                         id: wm_opacity_slider
@@ -434,17 +501,64 @@ MDScreen:
 
                     MDLabel:
                         id: wm_opacity_label
-                        text: "80%"
+                        text: '80%'
                         size_hint: None, None
                         size: dp(44), dp(44)
                         bold: True
-                        valign: "middle"
-                        theme_text_color: "Custom"
+                        valign: 'middle'
+                        theme_text_color: 'Custom'
                         text_color: app.c_text
 
             SectionCard:
                 SectionTitle:
-                    text: "Proceso"
+                    text: 'Drive y exportación'
+
+                MDBoxLayout:
+                    size_hint_y: None
+                    height: dp(44)
+                    spacing: dp(8)
+
+                    MDCheckbox:
+                        id: drive_check
+                        size_hint: None, None
+                        size: dp(44), dp(44)
+                        on_active: app.toggle_drive(self.active)
+
+                    MDLabel:
+                        text: 'Subir a Google Drive'
+                        theme_text_color: 'Custom'
+                        text_color: app.c_text
+                        size_hint_y: None
+                        height: dp(44)
+                        valign: 'middle'
+
+                DarkField:
+                    id: drive_id_field
+                    hint_text: 'Folder ID de Drive opcional'
+                    disabled: True
+
+                MDBoxLayout:
+                    size_hint_y: None
+                    height: dp(44)
+                    spacing: dp(8)
+
+                    MDCheckbox:
+                        id: open_folder_check
+                        size_hint: None, None
+                        size: dp(44), dp(44)
+                        active: True
+
+                    MDLabel:
+                        text: 'Abrir carpeta al terminar'
+                        theme_text_color: 'Custom'
+                        text_color: app.c_text
+                        size_hint_y: None
+                        height: dp(44)
+                        valign: 'middle'
+
+            SectionCard:
+                SectionTitle:
+                    text: 'Proceso'
 
                 MDBoxLayout:
                     size_hint_y: None
@@ -459,20 +573,20 @@ MDScreen:
 
                     MDLabel:
                         id: progress_label
-                        text: "0%"
+                        text: '0%'
                         size_hint: None, None
                         size: dp(40), dp(24)
-                        halign: "right"
+                        halign: 'right'
                         bold: True
-                        theme_text_color: "Custom"
+                        theme_text_color: 'Custom'
                         text_color: app.c_muted
 
                 MDLabel:
                     id: status_label
-                    text: "Listo"
+                    text: 'Listo'
                     size_hint_y: None
                     height: dp(34)
-                    theme_text_color: "Custom"
+                    theme_text_color: 'Custom'
                     text_color: app.c_text
 
                 MDBoxLayout:
@@ -482,14 +596,14 @@ MDScreen:
 
                     MDRaisedButton:
                         id: generate_btn
-                        text: "Generar"
+                        text: 'Generar'
                         md_bg_color: [0.13, 0.77, 0.37, 1]
                         size_hint_x: 1
                         on_release: app.start_generation()
 
                     MDRaisedButton:
                         id: cancel_btn
-                        text: "Cancelar"
+                        text: 'Cancelar'
                         md_bg_color: [0.94, 0.27, 0.27, 1]
                         size_hint_x: 1
                         disabled: True
@@ -497,7 +611,7 @@ MDScreen:
 
             SectionCard:
                 SectionTitle:
-                    text: "Registro"
+                    text: 'Registro'
 
                 MDScrollView:
                     size_hint_y: None
@@ -506,10 +620,10 @@ MDScreen:
 
                     MDLabel:
                         id: log_label
-                        text: ""
+                        text: ''
                         size_hint_y: None
                         height: self.texture_size[1]
-                        theme_text_color: "Custom"
+                        theme_text_color: 'Custom'
                         text_color: [0.88, 0.91, 0.93, 1]
                         font_size: sp(11)
                         padding: [dp(4), dp(4)]
@@ -534,12 +648,12 @@ class ClipForgeApp(MDApp):
         else:
             self.base_dir = Path(__file__).parent
 
+        # CORREGIDO:
+        # Primero se crea app_data_dir.
+        # Antes se buscaba ffmpeg antes de crear esta variable y la APK se cerraba en loading.
         if sys.platform == "android":
-            try:
-                from android.storage import primary_external_storage_path  # type: ignore
-                self.app_data_dir = Path(primary_external_storage_path()) / "ClipForgeStudio"
-            except Exception:
-                self.app_data_dir = Path.home() / "ClipForgeStudio"
+            from android.storage import primary_external_storage_path  # type: ignore
+            self.app_data_dir = Path(primary_external_storage_path()) / "ClipForgeStudio"
         elif os.name == "nt":
             self.app_data_dir = Path(os.getenv("APPDATA", str(self.base_dir))) / "ClipForgeStudio"
         else:
@@ -550,15 +664,17 @@ class ClipForgeApp(MDApp):
         self.ffmpeg = self._resolve_binary("ffmpeg")
         self.ffprobe = self._resolve_binary("ffprobe")
 
+        self.credentials_file = self.base_dir / "credentials.json"
+        self.token_file = self.app_data_dir / "token.json"
+        self.drive_uploader = DriveUploader(self.credentials_file, self.token_file)
+
         self.cancel_event = threading.Event()
         self.worker_thread = None
         self.current_process = None
         self.process_lock = threading.Lock()
-
         self._preview_img_widget = None
         self._quality = "Alta"
         self._wm_position = "Arriba derecha"
-        self._pending_callback = None
 
         return Builder.load_string(KV)
 
@@ -575,17 +691,74 @@ class ClipForgeApp(MDApp):
             try:
                 perms.append(Permission.READ_MEDIA_VIDEO)
                 perms.append(Permission.READ_MEDIA_IMAGES)
-            except AttributeError:
-                perms.append(Permission.READ_EXTERNAL_STORAGE)
-                perms.append(Permission.WRITE_EXTERNAL_STORAGE)
+            except Exception:
+                try:
+                    perms.append(Permission.READ_EXTERNAL_STORAGE)
+                    perms.append(Permission.WRITE_EXTERNAL_STORAGE)
+                except Exception:
+                    pass
 
             def on_result(permissions, grants):
-                self._log(f"Permisos media: {all(grants)}")
+                self._log(f"Permisos media: {all(grants) if grants else False}")
+                self._check_manage_storage()
 
-            request_permissions(perms, on_result)
+            if perms:
+                request_permissions(perms, on_result)
+            else:
+                self._check_manage_storage()
 
         except Exception as exc:
             self._log(f"Error permisos: {exc}")
+
+    def _check_manage_storage(self):
+        try:
+            from jnius import autoclass  # type: ignore
+            Environment = autoclass("android.os.Environment")
+
+            if Environment.isExternalStorageManager():
+                self._log("Acceso total al almacenamiento: OK")
+                return
+
+            Clock.schedule_once(lambda dt: self._show_storage_dialog(), 0.5)
+
+        except Exception as exc:
+            self._log(f"Check storage: {exc}")
+
+    def _show_storage_dialog(self):
+        def abrir_ajustes(*args):
+            dlg.dismiss()
+
+            try:
+                from jnius import autoclass  # type: ignore
+
+                Intent = autoclass("android.content.Intent")
+                Settings = autoclass("android.provider.Settings")
+                Uri = autoclass("android.net.Uri")
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+
+                pkg = PythonActivity.mActivity.getPackageName()
+                intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.setData(Uri.parse(f"package:{pkg}"))
+                PythonActivity.mActivity.startActivity(intent)
+
+            except Exception as exc:
+                self._log(f"Error abriendo ajustes: {exc}")
+
+        btn_ok = MDRaisedButton(text="Ir a Ajustes", md_bg_color=(0.13, 0.77, 0.37, 1))
+        btn_no = MDFlatButton(text="Ahora no")
+
+        dlg = MDDialog(
+            title="Permiso necesario",
+            text=(
+                "Para ver tus videos ClipForge necesita acceso a tus archivos.\n\n"
+                "Toca 'Ir a Ajustes' y activa 'Permitir acceso a todos los archivos'."
+            ),
+            buttons=[btn_no, btn_ok],
+        )
+
+        btn_ok.bind(on_release=abrir_ajustes)
+        btn_no.bind(on_release=lambda *a: dlg.dismiss())
+        dlg.open()
 
     def _resolve_binary(self, name: str) -> Path:
         suffix = ".exe" if os.name == "nt" else ""
@@ -617,289 +790,269 @@ class ClipForgeApp(MDApp):
 
     def show_quality_menu(self, caller):
         items = []
+
         for key in QUALITY_PRESETS:
             items.append({
                 "text": key,
                 "viewclass": "OneLineListItem",
-                "on_release": lambda x=key: self._select_quality(x),
+                "on_release": lambda x=key: (self._set_quality(x), self._close_menu()),
             })
 
         self._menu = MDDropdownMenu(caller=caller, items=items, width_mult=3)
         self._menu.open()
 
-    def _select_quality(self, value):
+    def _set_quality(self, value):
         self._quality = value
         self.root.ids.quality_btn.text = value
-        self._close_menu()
 
     def show_wm_pos_menu(self, caller):
         items = []
+
         for key in WM_POSITIONS:
             items.append({
                 "text": key,
                 "viewclass": "OneLineListItem",
-                "on_release": lambda x=key: self._select_wm_pos(x),
+                "on_release": lambda x=key: (self._set_wm_pos(x), self._close_menu()),
             })
 
         self._menu = MDDropdownMenu(caller=caller, items=items, width_mult=4)
         self._menu.open()
 
-    def _select_wm_pos(self, value):
+    def _set_wm_pos(self, value):
         self._wm_position = value
         self.root.ids.wm_pos_btn.text = value
-        self._close_menu()
 
     def _close_menu(self):
         if hasattr(self, "_menu") and self._menu:
             self._menu.dismiss()
 
+    def toggle_drive(self, active):
+        self.root.ids.drive_id_field.disabled = not active
+
     def pick_video(self):
         if sys.platform == "android":
             self._pick_android("video/*", self._on_video_selected)
         else:
-            self._open_desktop_file(
+            self._open_file_browser(
                 self._on_video_selected,
                 ["*.mp4", "*.mov", "*.mkv", "*.avi", "*.m4v"],
-                "Seleccionar video"
+                "Seleccionar video",
             )
 
     def pick_wm(self):
         if sys.platform == "android":
             self._pick_android("image/*", self._on_wm_selected)
         else:
-            self._open_desktop_file(
+            self._open_file_browser(
                 self._on_wm_selected,
                 ["*.png", "*.jpg", "*.jpeg"],
-                "Seleccionar imagen"
+                "Seleccionar imagen",
             )
 
-    def _open_desktop_file(self, callback, filters, title):
+    def _open_file_browser(self, callback, filters, title):
         try:
             from kivy.uix.popup import Popup
             from kivy.uix.boxlayout import BoxLayout
             from kivy.uix.button import Button
             from kivy.uix.filechooser import FileChooserListView
 
+            start = str(Path.home())
+
             layout = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(6))
-            chooser = FileChooserListView(path=str(Path.home()), filters=filters)
-            buttons = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+            chooser = FileChooserListView(path=start, size_hint_y=1, show_hidden=False)
+            btn_row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
 
             popup = Popup(
                 title=title,
                 content=layout,
                 size_hint=(0.97, 0.92),
+                background_color=(0.07, 0.09, 0.14, 1),
+                title_color=(1, 1, 1, 1),
             )
 
-            def select_file(*args):
-                selection = chooser.selection
+            def do_select(*args):
+                sel = chooser.selection
                 popup.dismiss()
-                if selection:
-                    callback([selection[0]])
 
-            cancel = Button(text="Cancelar")
-            ok = Button(text="Seleccionar")
-            cancel.bind(on_release=lambda *a: popup.dismiss())
-            ok.bind(on_release=select_file)
+                if sel:
+                    Clock.schedule_once(lambda dt: callback([sel[0]]), 0.1)
+                else:
+                    self._show_dialog("Aviso", "Selecciona un archivo primero.")
 
-            buttons.add_widget(cancel)
-            buttons.add_widget(ok)
+            btn_ok = Button(text="Seleccionar", background_color=(0.13, 0.77, 0.37, 1))
+            btn_cancel = Button(text="Cancelar", background_color=(0.3, 0.3, 0.3, 1))
+
+            btn_ok.bind(on_release=do_select)
+            btn_cancel.bind(on_release=lambda *a: popup.dismiss())
+
+            btn_row.add_widget(btn_cancel)
+            btn_row.add_widget(btn_ok)
+
             layout.add_widget(chooser)
-            layout.add_widget(buttons)
+            layout.add_widget(btn_row)
+
             popup.open()
 
         except Exception:
             import traceback
-            self._show_dialog("Error", traceback.format_exc())
+            self._show_dialog("Error abriendo selector", traceback.format_exc())
 
     def _pick_android(self, mime_type, callback):
-        """
-        Selector corregido:
-        abre galería / archivos nativos de Android usando ACTION_OPEN_DOCUMENT.
-        """
         try:
-            from android import activity  # type: ignore
-            from jnius import autoclass  # type: ignore
+            from kivy.uix.popup import Popup
+            from kivy.uix.boxlayout import BoxLayout
+            from kivy.uix.button import Button
+            from kivy.uix.label import Label
+            from kivy.uix.scrollview import ScrollView
+            from kivy.uix.gridlayout import GridLayout
 
-            Intent = autoclass("android.content.Intent")
+            is_video = "video" in mime_type
 
-            self._pending_callback = callback
+            if is_video:
+                exts = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
+                titulo = "Seleccionar video"
+            else:
+                exts = (".png", ".jpg", ".jpeg")
+                titulo = "Seleccionar imagen"
 
-            intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
-            intent.addCategory(Intent.CATEGORY_OPENABLE)
-            intent.setType(mime_type)
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            layout = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(8))
 
-            activity.bind(on_activity_result=self._on_activity_result)
+            status = Label(
+                text="Buscando archivos...",
+                size_hint_y=None,
+                height=dp(30),
+                color=(0.8, 0.8, 0.8, 1),
+            )
 
-            title = "Seleccionar video" if "video" in mime_type else "Seleccionar imagen"
-            chooser = Intent.createChooser(intent, title)
+            scroll = ScrollView(size_hint_y=1)
+            grid = GridLayout(cols=1, spacing=dp(4), size_hint_y=None)
+            grid.bind(minimum_height=grid.setter("height"))
 
-            activity.startActivityForResult(chooser, 1001)
+            btn_cancel = Button(
+                text="Cancelar",
+                size_hint_y=None,
+                height=dp(48),
+                background_color=(0.3, 0.3, 0.3, 1),
+            )
 
-        except Exception:
-            import traceback
-            self._show_dialog("Error abriendo galería", traceback.format_exc())
+            scroll.add_widget(grid)
 
-    def _on_activity_result(self, request_code, result_code, data):
-        try:
-            from android import activity  # type: ignore
-            activity.unbind(on_activity_result=self._on_activity_result)
+            layout.add_widget(status)
+            layout.add_widget(scroll)
+            layout.add_widget(btn_cancel)
 
-            if result_code != -1:
-                self._log("Selector cancelado")
-                return
+            popup = Popup(
+                title=titulo,
+                content=layout,
+                size_hint=(0.97, 0.93),
+                background_color=(0.07, 0.09, 0.14, 1),
+                title_color=(1, 1, 1, 1),
+            )
 
-            if data is None:
-                self._show_dialog("Error", "El selector no devolvió datos.")
-                return
+            btn_cancel.bind(on_release=lambda *a: popup.dismiss())
+            popup.open()
 
-            uri = data.getData()
-            if uri is None:
-                self._show_dialog("Error", "No se obtuvo URI.")
-                return
+            def hacer_boton(path):
+                nombre = os.path.basename(path)
 
-            try:
-                from jnius import autoclass  # type: ignore
-                PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                Intent = autoclass("android.content.Intent")
-
-                PythonActivity.mActivity.getContentResolver().takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                btn = Button(
+                    text=nombre,
+                    size_hint_y=None,
+                    height=dp(52),
+                    background_color=(0.13, 0.18, 0.27, 1),
+                    color=(1, 1, 1, 1),
+                    halign="left",
+                    text_size=(None, None),
                 )
-            except Exception as e:
-                self._log(f"No se pudo guardar permiso persistente: {e}")
 
-            self._log(f"URI recibido: {uri.toString()}")
+                def seleccionar(b, p=path):
+                    popup.dismiss()
+                    Clock.schedule_once(lambda dt: callback([p]), 0.1)
 
-            def copy_thread():
-                try:
-                    path = self._copy_uri_to_temp(uri)
-                    if not path:
-                        Clock.schedule_once(
-                            lambda dt: self._show_dialog(
-                                "Error",
-                                "No se pudo leer el archivo seleccionado."
-                            )
-                        )
-                        return
+                btn.bind(on_release=seleccionar)
+                return btn
 
-                    cb = self._pending_callback
-                    if cb:
-                        Clock.schedule_once(lambda dt: cb([path]))
+            def escanear():
+                rutas_buscar = [
+                    "/storage/emulated/0/DCIM",
+                    "/storage/emulated/0/Movies",
+                    "/storage/emulated/0/Download",
+                    "/storage/emulated/0/WhatsApp/Media/WhatsApp Video",
+                    "/storage/emulated/0/Pictures",
+                    "/storage/emulated/0",
+                ]
 
-                except Exception:
-                    import traceback
-                    msg = traceback.format_exc()
-                    Clock.schedule_once(lambda dt: self._show_dialog("Error", msg))
+                encontrados = []
 
-            threading.Thread(target=copy_thread, daemon=True).start()
+                for raiz in rutas_buscar:
+                    if not os.path.exists(raiz):
+                        continue
+
+                    try:
+                        for dirpath, dirnames, files in os.walk(raiz):
+                            for file_name in files:
+                                if file_name.lower().endswith(exts):
+                                    encontrados.append(os.path.join(dirpath, file_name))
+
+                            if len(encontrados) >= 200:
+                                break
+
+                    except Exception:
+                        continue
+
+                encontrados = list(dict.fromkeys(encontrados))
+
+                def actualizar_ui(dt):
+                    grid.clear_widgets()
+
+                    if encontrados:
+                        status.text = f"{len(encontrados)} archivo(s) encontrado(s)"
+
+                        try:
+                            ordenados = sorted(encontrados, key=os.path.getmtime, reverse=True)
+                        except Exception:
+                            ordenados = encontrados
+
+                        for path in ordenados:
+                            grid.add_widget(hacer_boton(path))
+                    else:
+                        status.text = "No se encontraron archivos"
+                        grid.add_widget(Label(
+                            text="Activa el permiso de almacenamiento\\nen Ajustes → Apps → ClipForge",
+                            color=(1, 0.4, 0.4, 1),
+                            size_hint_y=None,
+                            height=dp(70),
+                        ))
+
+                Clock.schedule_once(actualizar_ui, 0)
+
+            threading.Thread(target=escanear, daemon=True).start()
 
         except Exception:
             import traceback
             self._show_dialog("Error", traceback.format_exc())
-
-    def _copy_uri_to_temp(self, uri) -> Optional[str]:
-        """
-        Copia el video/imagen del URI de Android a un archivo local.
-        FFmpeg no puede leer content:// directamente, por eso se copia.
-        """
-        try:
-            from jnius import autoclass  # type: ignore
-
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            FileOutputStream = autoclass("java.io.FileOutputStream")
-
-            context = PythonActivity.mActivity
-            resolver = context.getContentResolver()
-            input_stream = resolver.openInputStream(uri)
-
-            if input_stream is None:
-                self._log("No se pudo abrir el stream del URI.")
-                return None
-
-            mime = resolver.getType(uri)
-
-            ext = ".mp4"
-            if mime:
-                if "image" in mime:
-                    if "jpeg" in mime or "jpg" in mime:
-                        ext = ".jpg"
-                    elif "png" in mime:
-                        ext = ".png"
-                    else:
-                        ext = ".img"
-                elif "video" in mime:
-                    if "mp4" in mime:
-                        ext = ".mp4"
-                    elif "quicktime" in mime:
-                        ext = ".mov"
-                    elif "x-matroska" in mime:
-                        ext = ".mkv"
-                    else:
-                        ext = ".mp4"
-
-            self.app_data_dir.mkdir(parents=True, exist_ok=True)
-
-            fd, temp_path = tempfile.mkstemp(
-                prefix="clipforge_selected_",
-                suffix=ext,
-                dir=str(self.app_data_dir)
-            )
-            os.close(fd)
-
-            output_stream = FileOutputStream(temp_path)
-            buffer = bytearray(131072)
-
-            while True:
-                n = input_stream.read(buffer)
-                if n < 0:
-                    break
-                output_stream.write(buffer, 0, n)
-
-            output_stream.flush()
-            output_stream.close()
-            input_stream.close()
-
-            return temp_path
-
-        except Exception:
-            import traceback
-            self._log(f"Error copiando URI:\n{traceback.format_exc()}")
-            return None
 
     def _on_video_selected(self, selection):
         if not selection:
             return
 
         path = selection[0]
-        self.root.ids.video_field.text = path
+
         self._log(f"Video: {path}")
-        self._update_status("Video seleccionado")
+        Clock.schedule_once(lambda dt: setattr(self.root.ids.video_field, "text", path))
+        self._update_status("Video seleccionado ✓")
 
-        if self.ffmpeg.exists():
+        if self.ffmpeg.exists() and self.ffprobe.exists():
             self._update_status("Generando vista previa...")
-            threading.Thread(
-                target=self._generate_preview,
-                args=(path,),
-                daemon=True
-            ).start()
+            threading.Thread(target=self._generate_preview, args=(path,), daemon=True).start()
         else:
-            self._log("ffmpeg no encontrado. No se genera vista previa.")
-
-    def _on_wm_selected(self, selection):
-        if not selection:
-            return
-
-        path = selection[0]
-        self.root.ids.wm_field.text = path
-        self._log(f"Marca de agua: {path}")
+            self._log("ffmpeg o ffprobe no encontrado — sin vista previa")
 
     def pick_out(self):
         if sys.platform == "android":
             try:
                 from jnius import autoclass  # type: ignore
+
                 Environment = autoclass("android.os.Environment")
                 movies_dir = Environment.getExternalStoragePublicDirectory(
                     Environment.DIRECTORY_MOVIES
@@ -908,86 +1061,66 @@ class ClipForgeApp(MDApp):
                 out = str(Path(movies_dir) / "ClipForge")
                 Path(out).mkdir(parents=True, exist_ok=True)
 
-                self.root.ids.out_field.text = out
+                Clock.schedule_once(lambda dt: setattr(self.root.ids.out_field, "text", out))
                 self._log(f"Salida: {out}")
                 self._show_dialog("Carpeta de salida", f"Los clips se guardarán en:\n{out}")
 
-            except Exception as exc:
+            except Exception:
                 fallback = str(self.app_data_dir / "output")
                 Path(fallback).mkdir(parents=True, exist_ok=True)
-                self.root.ids.out_field.text = fallback
+
+                Clock.schedule_once(lambda dt: setattr(self.root.ids.out_field, "text", fallback))
                 self._log(f"Salida fallback: {fallback}")
-                self._show_dialog("Carpeta de salida", f"Los clips se guardarán en:\n{fallback}")
 
+        elif PLYER_OK:
+            filechooser.choose_dir(on_selection=self._on_out_selected, multiple=False)
         else:
-            from kivy.uix.popup import Popup
-            from kivy.uix.boxlayout import BoxLayout
-            from kivy.uix.button import Button
-            from kivy.uix.filechooser import FileChooserListView
+            self._show_dialog("Error", "Plyer no disponible.")
 
-            layout = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(6))
-            chooser = FileChooserListView(path=str(Path.home()), dirselect=True)
-            buttons = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+    def _on_out_selected(self, selection):
+        if not selection:
+            return
 
-            popup = Popup(
-                title="Seleccionar carpeta",
-                content=layout,
-                size_hint=(0.97, 0.92)
-            )
+        path = selection[0]
+        Clock.schedule_once(lambda dt: setattr(self.root.ids.out_field, "text", path))
+        self._log(f"Salida: {path}")
 
-            def select_dir(*args):
-                selection = chooser.selection
-                popup.dismiss()
-                if selection:
-                    self.root.ids.out_field.text = selection[0]
-                    self._log(f"Salida: {selection[0]}")
+    def _on_wm_selected(self, selection):
+        if not selection:
+            return
 
-            cancel = Button(text="Cancelar")
-            ok = Button(text="Seleccionar")
-            cancel.bind(on_release=lambda *a: popup.dismiss())
-            ok.bind(on_release=select_dir)
-
-            buttons.add_widget(cancel)
-            buttons.add_widget(ok)
-            layout.add_widget(chooser)
-            layout.add_widget(buttons)
-            popup.open()
+        path = selection[0]
+        Clock.schedule_once(lambda dt: setattr(self.root.ids.wm_field, "text", path))
+        self._log(f"Marca de agua: {path}")
 
     def _generate_preview(self, video_path: str):
         try:
             duration = self._probe_duration(Path(video_path))
             preview_time = min(3.0, max(0.2, duration / 3))
 
-            fd, temp_path = tempfile.mkstemp(
-                prefix="clipforge_preview_",
-                suffix=".jpg"
-            )
+            fd, temp_path = tempfile.mkstemp(prefix="clipforge_preview_", suffix=".jpg")
             os.close(fd)
 
             cmd = [
                 str(self.ffmpeg),
                 "-hide_banner",
-                "-loglevel", "error",
+                "-loglevel",
+                "error",
                 "-y",
-                "-ss", f"{preview_time:.2f}",
-                "-i", video_path,
-                "-frames:v", "1",
+                "-ss",
+                f"{preview_time:.2f}",
+                "-i",
+                video_path,
+                "-frames:v",
+                "1",
                 temp_path,
             ]
 
-            subprocess.run(
-                cmd,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             Clock.schedule_once(lambda dt: self._show_preview(temp_path))
 
         except Exception as exc:
-            Clock.schedule_once(
-                lambda dt: self._update_status(f"Sin vista previa: {exc}")
-            )
+            Clock.schedule_once(lambda dt: self._update_status(f"Sin vista previa: {exc}"))
 
     def _show_preview(self, image_path: str):
         box = self.root.ids.preview_box
@@ -998,17 +1131,15 @@ class ClipForgeApp(MDApp):
             self._preview_img_widget = None
 
         label.text = ""
+
         img = KivyImage(source=image_path, allow_stretch=True, keep_ratio=True)
         box.add_widget(img)
-        self._preview_img_widget = img
 
+        self._preview_img_widget = img
         self._update_status("Vista previa lista")
 
     def _update_status(self, msg: str):
-        def set_status(dt):
-            self.root.ids.status_label.text = msg
-
-        Clock.schedule_once(set_status)
+        Clock.schedule_once(lambda dt: setattr(self.root.ids.status_label, "text", msg))
 
     def _update_progress(self, pct: int):
         def set_progress(dt):
@@ -1018,26 +1149,24 @@ class ClipForgeApp(MDApp):
         Clock.schedule_once(set_progress)
 
     def _log(self, msg: str):
-        def append_log(dt):
-            try:
-                self.root.ids.log_label.text += f"{msg}\n"
-            except Exception:
-                pass
+        def append(dt):
+            lbl = self.root.ids.log_label
+            lbl.text += f"{msg}\n"
 
-        Clock.schedule_once(append_log)
+        Clock.schedule_once(append)
 
     def _set_running(self, running: bool):
-        def set_ui(dt):
+        def set_state(dt):
             self.root.ids.generate_btn.disabled = running
             self.root.ids.cancel_btn.disabled = not running
 
-        Clock.schedule_once(set_ui)
+        Clock.schedule_once(set_state)
 
     def _show_dialog(self, title: str, text: str):
         def open_dialog(dt):
             btn = MDFlatButton(text="OK")
             dlg = MDDialog(title=title, text=text, buttons=[btn])
-            btn.bind(on_release=lambda *a: dlg.dismiss())
+            btn.bind(on_release=lambda x: dlg.dismiss())
             dlg.open()
 
         Clock.schedule_once(open_dialog)
@@ -1073,6 +1202,7 @@ class ClipForgeApp(MDApp):
             raise ValueError("Selecciona un video.")
 
         video_path = Path(video_raw)
+
         if not video_path.exists():
             raise FileNotFoundError("El video seleccionado no existe.")
 
@@ -1080,23 +1210,23 @@ class ClipForgeApp(MDApp):
             raise ValueError("Selecciona una carpeta de salida.")
 
         out_dir = Path(out_raw)
-        out_dir.mkdir(parents=True, exist_ok=True)
+
+        if not out_dir.exists():
+            raise FileNotFoundError("La carpeta de salida no existe.")
 
         wm_path = Path(wm_raw) if wm_raw else None
+
         if wm_path and not wm_path.exists():
             raise FileNotFoundError("La marca de agua no existe.")
 
         if not self.ffmpeg.exists():
             raise FileNotFoundError(
-                f"ffmpeg no encontrado.\n"
-                f"Coloca el binario ffmpeg en:\n{self.base_dir}\n\n"
-                "En Android necesitas incluir ffmpeg compatible con ARM64."
+                f"ffmpeg no encontrado.\nColoca el binario en:\n{self.base_dir}"
             )
 
         if not self.ffprobe.exists():
             raise FileNotFoundError(
-                f"ffprobe no encontrado.\n"
-                f"Coloca el binario ffprobe en:\n{self.base_dir}"
+                f"ffprobe no encontrado.\nColoca el binario en:\n{self.base_dir}"
             )
 
         start_sec = self._time_to_sec(ids.ini_m.text, ids.ini_s.text, "Inicio")
@@ -1119,6 +1249,11 @@ class ClipForgeApp(MDApp):
         if clips_total <= 0:
             raise ValueError("No hay clips válidos con ese rango.")
 
+        upload_drive = ids.drive_check.active
+
+        if upload_drive and DRIVE_ERR is not None:
+            raise RuntimeError("Faltan dependencias de Google Drive.")
+
         return {
             "video": video_path,
             "out_dir": out_dir,
@@ -1129,78 +1264,86 @@ class ClipForgeApp(MDApp):
             "clip_duration": clip_dur,
             "clips_total": clips_total,
             "quality": self._quality,
+            "upload_drive": upload_drive,
+            "drive_folder_id": ids.drive_id_field.text.strip() or None,
             "wm_size": int(ids.wm_size_slider.value),
             "wm_opacity": float(ids.wm_opacity_slider.value),
             "wm_position": self._wm_position,
+            "open_folder": ids.open_folder_check.active,
         }
 
     def _probe_duration(self, video_path: Path) -> float:
         cmd = [
             str(self.ffprobe),
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=nokey=1:noprint_wrappers=1",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nokey=1:noprint_wrappers=1",
             str(video_path),
         ]
 
-        output = subprocess.check_output(cmd, text=True).strip()
-        return float(output)
+        return float(subprocess.check_output(cmd, text=True).strip())
 
-    def _build_ffmpeg_cmd(
-        self,
-        settings: dict,
-        clip_index: int,
-        clip_start: float,
-        clip_duration: float,
-        output_file: Path
-    ) -> List[str]:
-
+    def _build_ffmpeg_cmd(self, settings, clip_index, clip_start, clip_duration, output_file) -> List[str]:
         quality = QUALITY_PRESETS[settings["quality"]]
-        filter_complex = self._build_filter_complex(settings, clip_index)
+        fc = self._build_filter_complex(settings, clip_index)
 
         cmd = [
             str(self.ffmpeg),
             "-hide_banner",
-            "-loglevel", "error",
+            "-loglevel",
+            "error",
             "-y",
-            "-ss", f"{clip_start:.3f}",
-            "-i", str(settings["video"]),
+            "-ss",
+            f"{clip_start:.3f}",
+            "-i",
+            str(settings["video"]),
         ]
 
         if settings["watermark"]:
             cmd += ["-i", str(settings["watermark"])]
 
         cmd += [
-            "-t", f"{clip_duration:.3f}",
-            "-filter_complex", filter_complex,
-            "-map", "[v]",
-            "-map", "0:a?",
-            "-c:v", "libx264",
-            "-preset", quality["preset"],
-            "-crf", str(quality["crf"]),
-            "-profile:v", "high",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            "-c:a", "aac",
-            "-b:a", "192k",
+            "-t",
+            f"{clip_duration:.3f}",
+            "-filter_complex",
+            fc,
+            "-map",
+            "[v]",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            quality["preset"],
+            "-crf",
+            str(quality["crf"]),
+            "-profile:v",
+            "high",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
             str(output_file),
         ]
 
         return cmd
 
-    def _build_filter_complex(self, settings: dict, clip_index: int) -> str:
-        text = self._escape_drawtext(f"{settings['text_prefix']} {clip_index}")
+    def _build_filter_complex(self, settings, clip_index) -> str:
+        clip_text = self._escape_drawtext(f"{settings['text_prefix']} {clip_index}")
         font_part = self._get_font_part()
 
         drawtext = (
-            f"drawtext={font_part}"
-            f"text='{text}':"
-            "fontcolor=white:"
-            "fontsize=34:"
-            "borderw=2:"
-            "bordercolor=black@0.65:"
-            "x=(w-text_w)/2:"
-            "y=24:"
+            f"drawtext={font_part}text='{clip_text}':"
+            "fontcolor=white:fontsize=34:"
+            "borderw=2:bordercolor=black@0.65:"
+            "x=(w-text_w)/2:y=24:"
             "alpha='if(lt(t,1),t,1)'"
         )
 
@@ -1212,8 +1355,7 @@ class ClipForgeApp(MDApp):
             position = WM_POSITIONS[settings["wm_position"]]
 
             chains.append(
-                f"[1:v]scale={settings['wm_size']}:-1,"
-                f"format=rgba,"
+                f"[1:v]scale={settings['wm_size']}:-1,format=rgba,"
                 f"colorchannelmixer=aa={opacity:.2f}[wm]"
             )
 
@@ -1231,7 +1373,6 @@ class ClipForgeApp(MDApp):
             Path("/system/fonts/Roboto-Regular.ttf"),
             Path("/system/fonts/DroidSans.ttf"),
             Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-            Path("C:/Windows/Fonts/arial.ttf"),
         ]
 
         for path in candidates:
@@ -1265,6 +1406,7 @@ class ClipForgeApp(MDApp):
                 encoding="utf-8",
                 errors="replace",
             )
+
             proc = self.current_process
 
         while proc.poll() is None:
@@ -1286,8 +1428,8 @@ class ClipForgeApp(MDApp):
                 self.current_process = None
 
         if proc.returncode != 0:
-            detail = stderr.strip() or "sin detalle"
-            raise RuntimeError(f"FFmpeg error:\n{detail[-1200:]}")
+            detail = (stderr.strip() or "sin detalle")[-1200:]
+            raise RuntimeError(f"FFmpeg error:\n{detail}")
 
     def start_generation(self):
         if self.worker_thread and self.worker_thread.is_alive():
@@ -1307,9 +1449,9 @@ class ClipForgeApp(MDApp):
 
         self.cancel_event.clear()
         self._set_running(True)
-
         self._update_status("Preparando proceso...")
-        self._log("=" * 40)
+
+        self._log("=" * 50)
         self._log("Inicio de generación")
         self._log(f"Video: {settings['video']}")
         self._log(f"Clips: {settings['clips_total']}")
@@ -1317,8 +1459,9 @@ class ClipForgeApp(MDApp):
         self.worker_thread = threading.Thread(
             target=self._worker,
             args=(settings,),
-            daemon=True
+            daemon=True,
         )
+
         self.worker_thread.start()
 
     def cancel_generation(self):
@@ -1338,31 +1481,33 @@ class ClipForgeApp(MDApp):
 
     def _worker(self, settings: dict):
         created = 0
+        uploaded = 0
         digits = max(3, len(str(settings["clips_total"])))
 
         try:
+            drive = None
+
+            if settings["upload_drive"]:
+                self._update_status("Conectando con Drive...")
+                self._log("Autenticando con Google Drive...")
+                drive = self.drive_uploader
+                drive.auth()
+                self._log("Drive conectado.")
+
             for index in range(settings["clips_total"]):
                 if self.cancel_event.is_set():
                     raise UserCancelled("Cancelado por el usuario.")
 
                 start_t = settings["start_sec"] + index * settings["clip_duration"]
-                actual_d = min(
-                    settings["clip_duration"],
-                    settings["end_sec"] - start_t
-                )
+                actual_d = min(settings["clip_duration"], settings["end_sec"] - start_t)
 
                 if actual_d <= 0:
                     break
 
-                out_name = (
-                    f"{settings['video'].stem}_clip_"
-                    f"{index + 1:0{digits}d}.mp4"
-                )
+                out_name = f"{settings['video'].stem}_clip_{index + 1:0{digits}d}.mp4"
                 out_file = settings["out_dir"] / out_name
 
-                self._update_status(
-                    f"Clip {index + 1}/{settings['clips_total']}..."
-                )
+                self._update_status(f"Clip {index + 1}/{settings['clips_total']}...")
                 self._log(f"Creando {out_name} ({actual_d:.1f}s)")
 
                 cmd = self._build_ffmpeg_cmd(
@@ -1370,20 +1515,36 @@ class ClipForgeApp(MDApp):
                     index + 1,
                     start_t,
                     actual_d,
-                    out_file
+                    out_file,
                 )
 
                 self._run_ffmpeg(cmd)
                 created += 1
 
+                if settings["upload_drive"] and drive:
+                    if self.cancel_event.is_set():
+                        raise UserCancelled("Cancelado.")
+
+                    self._update_status(f"Subiendo clip {index + 1}...")
+                    info = drive.upload_file(out_file, settings["drive_folder_id"])
+                    uploaded += 1
+                    self._log(f"Drive: {info.get('name')} | {info.get('webViewLink', '')}")
+
                 pct = int(((index + 1) / settings["clips_total"]) * 100)
                 self._update_progress(pct)
 
-            self._update_progress(100)
             msg = f"Listo: {created} clip(s) creados"
+
+            if settings["upload_drive"]:
+                msg += f", {uploaded} subido(s) a Drive"
+
+            self._update_progress(100)
             self._update_status(msg)
             self._log(msg)
             self._show_dialog("Proceso finalizado", msg)
+
+            if settings["open_folder"]:
+                self._open_folder(settings["out_dir"])
 
         except UserCancelled as exc:
             self._update_progress(0)
@@ -1402,6 +1563,20 @@ class ClipForgeApp(MDApp):
                 self.current_process = None
 
             self._set_running(False)
+
+    def _open_folder(self, path: Path):
+        try:
+            if sys.platform == "android":
+                return
+            elif os.name == "nt":
+                os.startfile(str(path))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+
+        except Exception as exc:
+            self._log(f"No se pudo abrir la carpeta: {exc}")
 
 
 if __name__ == "__main__":
