@@ -732,31 +732,109 @@ class ClipForgeApp(MDApp):
 
     # ── Selectores de archivos ───────────────────────────────────────────────
     def pick_video(self):
-        try:
-            from plyer import filechooser as fc
+        self._open_file_browser(
+            callback=self._on_video_selected,
+            filters=["*.mp4", "*.mov", "*.mkv", "*.avi", "*.m4v", "*.MP4", "*.MOV"],
+            title="Seleccionar video",
+        )
 
-            def _on_selection(selection):
+    def pick_wm(self):
+        self._open_file_browser(
+            callback=self._on_wm_selected,
+            filters=["*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG"],
+            title="Seleccionar imagen",
+        )
+
+    def _open_file_browser(self, callback, filters, title):
+        try:
+            from kivy.uix.popup        import Popup
+            from kivy.uix.boxlayout    import BoxLayout
+            from kivy.uix.button       import Button
+            from kivy.uix.filechooser  import FileChooserListView
+            from kivy.uix.label        import Label
+
+            # Ruta inicial
+            try:
+                if sys.platform == "android":
+                    from jnius import autoclass  # type: ignore
+                    Env = autoclass("android.os.Environment")
+                    start = Env.getExternalStorageDirectory().getAbsolutePath()
+                else:
+                    start = str(Path.home())
+            except Exception:
+                start = "/sdcard" if sys.platform == "android" else str(Path.home())
+
+            layout = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(6))
+
+            lbl = Label(
+                text=title,
+                size_hint_y=None,
+                height=dp(32),
+                color=(1, 1, 1, 1),
+                bold=True,
+            )
+
+            chooser = FileChooserListView(
+                path=start,
+                filters=filters,
+                size_hint_y=1,
+            )
+
+            btn_row = BoxLayout(
+                size_hint_y=None,
+                height=dp(48),
+                spacing=dp(8),
+            )
+
+            popup = Popup(
+                title=title,
+                content=layout,
+                size_hint=(0.97, 0.92),
+                background_color=(0.07, 0.09, 0.14, 1),
+                title_color=(1, 1, 1, 1),
+            )
+
+            def do_select(*a):
                 try:
-                    if not selection:
-                        self._log("Selección cancelada o vacía")
-                        return
-                    path = selection[0]
-                    self._log(f"Seleccionado: {path}")
-                    Clock.schedule_once(lambda dt: self._on_video_selected([path]))
+                    sel = chooser.selection
+                    popup.dismiss()
+                    if sel:
+                        path = sel[0]
+                        self._log(f"Archivo: {path}")
+                        Clock.schedule_once(lambda dt: callback([path]), 0.1)
+                    else:
+                        self._show_dialog("Aviso", "No seleccionaste ningún archivo.")
                 except Exception as e:
                     import traceback
-                    Clock.schedule_once(lambda dt: self._show_dialog(
-                        "Error en selección", traceback.format_exc()
-                    ))
+                    self._show_dialog("Error selección", traceback.format_exc())
 
-            fc.open_file(
-                on_selection=_on_selection,
-                filters=["video/*"] if sys.platform == "android" else ["*.mp4", "*.mov", "*.mkv"],
-                multiple=False,
+            def do_cancel(*a):
+                popup.dismiss()
+
+            btn_ok = Button(
+                text="Seleccionar",
+                background_color=(0.13, 0.77, 0.37, 1),
+                color=(1, 1, 1, 1),
             )
+            btn_cancel = Button(
+                text="Cancelar",
+                background_color=(0.3, 0.3, 0.3, 1),
+                color=(1, 1, 1, 1),
+            )
+
+            btn_ok.bind(on_release=do_select)
+            btn_cancel.bind(on_release=do_cancel)
+
+            btn_row.add_widget(btn_cancel)
+            btn_row.add_widget(btn_ok)
+            layout.add_widget(chooser)
+            layout.add_widget(btn_row)
+
+            popup.open()
+
         except Exception as exc:
             import traceback
-            self._show_dialog("Error pick_video", traceback.format_exc())
+            self._show_dialog("Error abriendo selector", traceback.format_exc())
 
     def _pick_android(self, mime_type, callback):
         """Selector robusto para Android 13+ usando Intent nativo."""
@@ -920,24 +998,6 @@ class ClipForgeApp(MDApp):
         path = selection[0]
         Clock.schedule_once(lambda dt: setattr(self.root.ids.out_field, "text", path))
         self._log(f"Salida: {path}")
-
-    def pick_wm(self):
-        try:
-            from plyer import filechooser as fc
-            if sys.platform == "android":
-                fc.open_file(
-                    on_selection=self._on_wm_selected,
-                    filters=["image/*"],
-                    multiple=False,
-                )
-            else:
-                fc.open_file(
-                    on_selection=self._on_wm_selected,
-                    filters=["*.png", "*.jpg", "*.jpeg"],
-                    multiple=False,
-                )
-        except Exception as exc:
-            self._show_dialog("Error al abrir imagen", str(exc))
 
     def _on_wm_selected(self, selection):
         if not selection:
