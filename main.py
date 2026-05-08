@@ -801,113 +801,86 @@ class ClipForgeApp(MDApp):
 
     # ── Selectores de archivos ───────────────────────────────────────────────
     def pick_video(self):
-        self._open_file_browser(
-            callback=self._on_video_selected,
-            filters=["*.mp4", "*.mov", "*.mkv", "*.avi", "*.m4v", "*.MP4", "*.MOV"],
-            title="Seleccionar video",
-        )
+        if sys.platform == "android":
+            self._pick_android("video/*", self._on_video_selected)
+        else:
+            self._open_file_browser(
+                callback=self._on_video_selected,
+                filters=["*.mp4", "*.mov", "*.mkv", "*.avi", "*.m4v"],
+                title="Seleccionar video",
+            )
 
     def pick_wm(self):
-        self._open_file_browser(
-            callback=self._on_wm_selected,
-            filters=["*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG"],
-            title="Seleccionar imagen",
-        )
+        if sys.platform == "android":
+            self._pick_android("image/*", self._on_wm_selected)
+        else:
+            self._open_file_browser(
+                callback=self._on_wm_selected,
+                filters=["*.png", "*.jpg", "*.jpeg"],
+                title="Seleccionar imagen",
+            )
 
     def _open_file_browser(self, callback, filters, title):
         try:
-            from kivy.uix.popup        import Popup
-            from kivy.uix.boxlayout    import BoxLayout
-            from kivy.uix.button       import Button
-            from kivy.uix.filechooser  import FileChooserListView
-            from kivy.uix.label        import Label
+            from kivy.uix.popup       import Popup
+            from kivy.uix.boxlayout   import BoxLayout
+            from kivy.uix.button      import Button
+            from kivy.uix.filechooser import FileChooserListView
 
-            # Ruta inicial — almacenamiento interno del teléfono
-            try:
-                if sys.platform == "android":
-                    start = "/storage/emulated/0"
-                    if not os.path.exists(start):
-                        start = "/"
-                else:
-                    start = str(Path.home())
-            except Exception:
+            if sys.platform == "android":
+                rutas = [
+                    "/storage/emulated/0/DCIM",
+                    "/storage/emulated/0/Movies",
+                    "/storage/emulated/0/Download",
+                    "/storage/emulated/0/Pictures",
+                    "/storage/emulated/0",
+                    "/sdcard/DCIM", "/sdcard",
+                ]
                 start = "/"
+                for r in rutas:
+                    try:
+                        if os.listdir(r):
+                            start = r
+                            self._log(f"Ruta OK: {r}")
+                            break
+                    except Exception:
+                        continue
+            else:
+                start = str(Path.home())
 
-            layout = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(6))
-
-            lbl = Label(
-                text=title,
-                size_hint_y=None,
-                height=dp(32),
-                color=(1, 1, 1, 1),
-                bold=True,
-            )
-
-            chooser = FileChooserListView(
-                path=start,
-                filters=[] if sys.platform == "android" else filters,
-                size_hint_y=1,
-                show_hidden=False,
-            )
-
-            btn_row = BoxLayout(
-                size_hint_y=None,
-                height=dp(48),
-                spacing=dp(8),
-            )
-
-            popup = Popup(
-                title=title,
-                content=layout,
-                size_hint=(0.97, 0.92),
-                background_color=(0.07, 0.09, 0.14, 1),
-                title_color=(1, 1, 1, 1),
-            )
+            layout  = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(6))
+            chooser = FileChooserListView(path=start, size_hint_y=1, show_hidden=False)
+            btn_row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+            popup   = Popup(title=title, content=layout, size_hint=(0.97, 0.92),
+                            background_color=(0.07, 0.09, 0.14, 1), title_color=(1,1,1,1))
 
             def do_select(*a):
                 try:
                     sel = chooser.selection
                     popup.dismiss()
                     if sel:
-                        path = sel[0]
-                        self._log(f"Archivo: {path}")
-                        Clock.schedule_once(lambda dt: callback([path]), 0.1)
+                        Clock.schedule_once(lambda dt: callback([sel[0]]), 0.1)
                     else:
-                        self._show_dialog("Aviso", "No seleccionaste ningún archivo.")
-                except Exception as e:
+                        self._show_dialog("Aviso", "Selecciona un archivo primero.")
+                except Exception:
                     import traceback
-                    self._show_dialog("Error selección", traceback.format_exc())
+                    self._show_dialog("Error", traceback.format_exc())
 
-            def do_cancel(*a):
-                popup.dismiss()
-
-            btn_ok = Button(
-                text="Seleccionar",
-                background_color=(0.13, 0.77, 0.37, 1),
-                color=(1, 1, 1, 1),
-            )
-            btn_cancel = Button(
-                text="Cancelar",
-                background_color=(0.3, 0.3, 0.3, 1),
-                color=(1, 1, 1, 1),
-            )
-
+            btn_ok = Button(text="Seleccionar", background_color=(0.13, 0.77, 0.37, 1))
+            btn_cancel = Button(text="Cancelar", background_color=(0.3, 0.3, 0.3, 1))
             btn_ok.bind(on_release=do_select)
-            btn_cancel.bind(on_release=do_cancel)
-
+            btn_cancel.bind(on_release=lambda *a: popup.dismiss())
             btn_row.add_widget(btn_cancel)
             btn_row.add_widget(btn_ok)
             layout.add_widget(chooser)
             layout.add_widget(btn_row)
-
             popup.open()
-
-        except Exception as exc:
+        except Exception:
             import traceback
             self._show_dialog("Error abriendo selector", traceback.format_exc())
 
     def _pick_android(self, mime_type, callback):
-        """Selector robusto para Android 13+ usando Intent nativo."""
+        """Abre la galería nativa de Android."""
         try:
             from android import activity  # type: ignore
             from jnius import autoclass   # type: ignore
@@ -917,65 +890,64 @@ class ClipForgeApp(MDApp):
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             Intent         = autoclass("android.content.Intent")
 
-            intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
-            intent.setType(mime_type)
-            intent.addCategory(Intent.CATEGORY_OPENABLE)
-            # FLAG_GRANT_READ_URI_PERMISSION permite leer el archivo después
-            intent.addFlags(1)  # FLAG_GRANT_READ_URI_PERMISSION = 1
+            if "video" in mime_type:
+                # Abrir galería directo en videos
+                intent = Intent(Intent.ACTION_PICK)
+                intent.setType("video/*")
+            else:
+                # Abrir galería en imágenes
+                intent = Intent(Intent.ACTION_PICK)
+                intent.setType("image/*")
 
             activity.bind(on_activity_result=self._on_activity_result)
             PythonActivity.mActivity.startActivityForResult(intent, 1001)
 
-        except Exception as exc:
+        except Exception:
             import traceback
-            err = traceback.format_exc()
-            self._log(f"Error selector: {err}")
-            self._show_dialog("Error al abrir selector", str(exc))
+            self._show_dialog("Error al abrir galería", traceback.format_exc())
 
     def _on_activity_result(self, request_code, result_code, data):
-        """Callback cuando el selector de archivos regresa."""
         try:
             from android import activity  # type: ignore
             activity.unbind(on_activity_result=self._on_activity_result)
 
-            self._log(f"Activity result: code={request_code} result={result_code}")
-
-            # RESULT_OK = -1 en Java/Android
-            if result_code != -1:
-                self._log("Selector cancelado por el usuario")
+            if result_code != -1:  # -1 = RESULT_OK en Java
+                self._log("Selector cancelado")
                 return
 
             if data is None:
-                self._show_dialog("Sin datos", "El selector no devolvió datos")
+                self._show_dialog("Error", "El selector no devolvió datos")
                 return
 
             uri = data.getData()
             if uri is None:
-                self._show_dialog("Sin URI", "No se obtuvo URI del archivo")
+                self._show_dialog("Error", "No se obtuvo URI")
                 return
 
-            uri_str = uri.toString()
-            self._log(f"URI: {uri_str}")
+            self._log(f"URI recibido: {uri.toString()}")
 
-            # Copiar a temp para tener ruta real accesible
-            path = self._copy_uri_to_temp(uri)
-            if path:
-                self._log(f"Archivo copiado a: {path}")
-                callback = getattr(self, "_pending_callback", None)
-                if callback:
-                    Clock.schedule_once(lambda dt: callback([path]))
-            else:
-                self._show_dialog(
-                    "Error leyendo archivo",
-                    "No se pudo copiar el archivo seleccionado.\n"
-                    "Verifica que la app tiene permisos de almacenamiento."
-                )
+            # Copiar a archivo temporal accesible por Python
+            def copiar_en_hilo():
+                try:
+                    path = self._copy_uri_to_temp(uri)
+                    if path:
+                        cb = getattr(self, "_pending_callback", None)
+                        if cb:
+                            Clock.schedule_once(lambda dt: cb([path]))
+                    else:
+                        Clock.schedule_once(lambda dt: self._show_dialog(
+                            "Error", "No se pudo leer el archivo seleccionado."
+                        ))
+                except Exception:
+                    import traceback
+                    msg = traceback.format_exc()
+                    Clock.schedule_once(lambda dt: self._show_dialog("Error", msg))
 
-        except Exception as exc:
+            threading.Thread(target=copiar_en_hilo, daemon=True).start()
+
+        except Exception:
             import traceback
-            err = traceback.format_exc()
-            self._log(f"Error en activity result:\n{err}")
-            self._show_dialog("Error interno", str(exc))
+            self._show_dialog("Error", traceback.format_exc())
 
     def _copy_uri_to_temp(self, uri) -> Optional[str]:
         """Copia un archivo desde URI de Android a un archivo temporal accesible."""
