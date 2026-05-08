@@ -1,761 +1,1041 @@
-"""
-ClipForge Studio — Android
-Reescritura completa para máxima compatibilidad
-"""
-import math, os, shutil, subprocess, sys, tempfile, threading, time
+# main.py
+# ClipForge Studio - APK Android estable
+# La app primero abre. No pide permisos ni ejecuta ffmpeg durante el loading.
+
+import os
+import sys
+import math
+import time
+import shutil
+import traceback
+import threading
+import subprocess
 from pathlib import Path
-from typing  import List, Optional
 
-# ── Config Kivy ──────────────────────────────────────────────────────────────
+
+# ============================================================
+# GUARDAR ERRORES SI LA APK SE CIERRA
+# ============================================================
+
+def guardar_error(exc_type, exc_value, exc_tb):
+    try:
+        texto = "ERROR EN CLIPFORGE\n\n"
+        texto += "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+
+        rutas = [
+            "/storage/emulated/0/ClipForge_error.txt",
+            os.path.join(os.getcwd(), "ClipForge_error.txt"),
+        ]
+
+        for ruta in rutas:
+            try:
+                with open(ruta, "w", encoding="utf-8") as f:
+                    f.write(texto)
+                break
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+sys.excepthook = guardar_error
+
+
+# ============================================================
+# KIVY IMPORTS
+# ============================================================
+
 from kivy.config import Config
-Config.set("graphics", "width",  "420")
+
+Config.set("graphics", "width", "420")
 Config.set("graphics", "height", "860")
-Config.set("input",    "mouse",  "mouse,multitouch_on_demand")
-Config.set("kivy",     "exit_on_escape", "0")
+Config.set("input", "mouse", "mouse,multitouch_on_demand")
+Config.set("kivy", "exit_on_escape", "0")
 
-from kivy.app            import App
-from kivy.clock          import Clock
-from kivy.metrics        import dp, sp
-from kivy.uix.boxlayout  import BoxLayout
-from kivy.uix.button     import Button
+from kivy.app import App
+from kivy.clock import Clock
+from kivy.metrics import dp
+from kivy.core.window import Window
+
+from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
-from kivy.uix.label      import Label
-from kivy.uix.popup      import Popup
-from kivy.uix.progressbar import ProgressBar
 from kivy.uix.scrollview import ScrollView
-from kivy.uix.slider     import Slider
-from kivy.uix.switch     import Switch
-from kivy.uix.textinput  import TextInput
-from kivy.uix.widget     import Widget
-from kivy.graphics       import Color, Rectangle
+from kivy.uix.label import Label
+from kivy.uix.button import Button
+from kivy.uix.textinput import TextInput
+from kivy.uix.slider import Slider
+from kivy.uix.progressbar import ProgressBar
+from kivy.uix.popup import Popup
 
-# Google Drive (opcional)
-try:
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials       import Credentials
-    from google_auth_oauthlib.flow       import InstalledAppFlow
-    from googleapiclient.discovery       import build as gdrive_build
-    from googleapiclient.http            import MediaFileUpload
-    DRIVE_ERR = None
-except Exception as e:
-    Request = Credentials = InstalledAppFlow = gdrive_build = MediaFileUpload = None
-    DRIVE_ERR = e
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 QUALITY_PRESETS = {
-    "Alta":       {"preset": "slow",     "crf": 17},
-    "Balanceada": {"preset": "medium",   "crf": 20},
-    "Rápida":     {"preset": "veryfast", "crf": 23},
-}
-WM_POSITIONS = {
-    "Arriba derecha":   "W-w-20:20",
-    "Arriba izquierda": "20:20",
-    "Abajo derecha":    "W-w-20:H-h-20",
-    "Abajo izquierda":  "20:H-h-20",
-    "Centro":           "(W-w)/2:(H-h)/2",
+    "Alta": {"preset": "slow", "crf": "17"},
+    "Balanceada": {"preset": "medium", "crf": "20"},
+    "Rapida": {"preset": "veryfast", "crf": "23"},
 }
 
-C_BG   = (0.051, 0.067, 0.090, 1)
-C_CARD = (0.080, 0.110, 0.160, 1)
-C_FIELD= (0.122, 0.161, 0.216, 1)
-C_TEXT = (0.95,  0.97,  1.00,  1)
-C_MUTED= (0.58,  0.63,  0.72,  1)
-C_GREEN= (0.13,  0.77,  0.37,  1)
-C_BLUE = (0.14,  0.39,  0.92,  1)
-C_RED  = (0.94,  0.27,  0.27,  1)
-C_DARK = (0.05,  0.07,  0.10,  1)
+WM_POSITIONS = {
+    "Arriba derecha": "W-w-20:20",
+    "Arriba izquierda": "20:20",
+    "Abajo derecha": "W-w-20:H-h-20",
+    "Abajo izquierda": "20:H-h-20",
+    "Centro": "(W-w)/2:(H-h)/2",
+}
 
 
 class UserCancelled(Exception):
     pass
 
 
-class Card(BoxLayout):
-    def __init__(self, **kw):
-        super().__init__(**kw)
-        with self.canvas.before:
-            Color(*C_CARD)
-            self.rect = Rectangle(pos=self.pos, size=self.size)
-        self.bind(pos=self._u, size=self._u)
-
-    def _u(self, *a):
-        self.rect.pos  = self.pos
-        self.rect.size = self.size
-
-
-def lbl(text, color=C_TEXT, size=14, bold=False, height=dp(28)):
-    l = Label(text=text, color=color, font_size=sp(size), bold=bold,
-              size_hint_y=None, height=height,
-              halign="left", valign="middle")
-    l.bind(size=lambda i, v: setattr(i, "text_size", (v[0], None)))
-    return l
-
-
-def field(hint="", text=""):
-    return TextInput(
-        hint_text=hint, text=text, multiline=False,
-        background_color=C_FIELD, foreground_color=C_TEXT,
-        cursor_color=C_TEXT, hint_text_color=list(C_MUTED),
-        font_size=sp(13), size_hint_y=None, height=dp(44),
-        padding=[dp(10), dp(12)],
-    )
-
-
-def btn(text, color=C_BLUE, height=dp(46)):
-    return Button(text=text, background_color=color, color=C_TEXT,
-                  size_hint_y=None, height=height, font_size=sp(13),
-                  bold=True, background_normal="")
-
-
-def sep():
-    w = Widget(size_hint_y=None, height=dp(1))
-    with w.canvas:
-        Color(0.2, 0.25, 0.35, 1)
-        r = Rectangle(pos=w.pos, size=w.size)
-    w.bind(pos=lambda i, v: setattr(r, "pos", v),
-           size=lambda i, v: setattr(r, "size", v))
-    return w
-
-
-class TouchScroll(ScrollView):
-    def on_touch_down(self, touch):
-        touch.ud["_sy"] = touch.y
-        return super().on_touch_down(touch)
-
-    def on_touch_move(self, touch):
-        if "_sy" in touch.ud:
-            dy = touch.y - touch.ud["_sy"]
-            if abs(dy) > 8:
-                self.scroll_y = max(0.0, min(1.0,
-                    self.scroll_y + dy / max(self.height, 1) * 2.5))
-                touch.ud["_sy"] = touch.y
-                return True
-        return super().on_touch_move(touch)
-
-
-class DriveUploader:
-    def __init__(self, creds, token):
-        self.creds   = creds
-        self.token   = token
-        self.service = None
-
-    def auth(self):
-        if DRIVE_ERR:
-            raise RuntimeError("Drive no disponible.") from DRIVE_ERR
-        c = None
-        if self.token.exists():
-            c = Credentials.from_authorized_user_file(str(self.token), SCOPES)
-        if c and c.expired and c.refresh_token:
-            c.refresh(Request())
-        elif not c or not c.valid:
-            c = InstalledAppFlow.from_client_secrets_file(
-                str(self.creds), SCOPES).run_local_server(port=0)
-        self.token.parent.mkdir(parents=True, exist_ok=True)
-        self.token.write_text(c.to_json())
-        self.service = gdrive_build("drive", "v3", credentials=c)
-
-    def upload(self, path, folder_id=None):
-        svc = self.service
-        meta = {"name": path.name}
-        if folder_id:
-            meta["parents"] = [folder_id]
-        media = MediaFileUpload(str(path), mimetype="video/mp4", resumable=False)
-        return svc.files().create(body=meta, media_body=media,
-                                  fields="id,name,webViewLink").execute()
-
-
 class ClipForgeApp(App):
-
     def build(self):
-        self.base_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) \
-                        else Path(__file__).parent
-        self.ffmpeg   = self._bin("ffmpeg")
-        self.ffprobe  = self._bin("ffprobe")
+        # Nada pesado aquí. Así evitamos crash en loading.
+        Window.clearcolor = (0.05, 0.07, 0.10, 1)
 
-        if sys.platform == "android":
-            self.out_dir = Path("/storage/emulated/0/Movies/ClipForge")
-        elif os.name == "nt":
-            self.out_dir = Path(os.getenv("APPDATA", ".")) / "ClipForge"
-        else:
-            self.out_dir = Path.home() / "ClipForge"
-        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.bg = (0.05, 0.07, 0.10, 1)
+        self.card = (0.08, 0.11, 0.16, 1)
+        self.field = (0.12, 0.16, 0.22, 1)
+        self.text = (0.95, 0.97, 1, 1)
+        self.muted = (0.62, 0.67, 0.74, 1)
+        self.blue = (0.12, 0.38, 0.90, 1)
+        self.green = (0.10, 0.68, 0.30, 1)
+        self.red = (0.85, 0.20, 0.20, 1)
 
-        app_data = self.out_dir / ".data"
-        app_data.mkdir(exist_ok=True)
-        self.drive = DriveUploader(
-            self.base_dir / "credentials.json",
-            app_data / "token.json",
-        )
-
-        self.cancel_event    = threading.Event()
-        self.worker_thread   = None
+        self.cancel_event = threading.Event()
+        self.worker_thread = None
         self.current_process = None
-        self.proc_lock       = threading.Lock()
-        self.video_path      = ""
-        self.wm_path         = ""
-        self.quality         = "Alta"
-        self.wm_pos          = "Arriba derecha"
+        self.process_lock = threading.Lock()
 
-        return self._ui()
+        self.quality = "Balanceada"
+        self.wm_position = "Arriba derecha"
+
+        self.base_dir = self.safe_base_dir()
+        self.app_data_dir = self.safe_data_dir()
+
+        self.ffmpeg = None
+        self.ffprobe = None
+
+        return self.crear_interfaz()
 
     def on_start(self):
-        if sys.platform == "android":
-            Clock.schedule_once(self._permisos, 1.0)
+        # La app ya abrió. Ahora hacemos cosas livianas.
+        Clock.schedule_once(lambda dt: self.post_inicio(), 0.5)
 
-    def _permisos(self, dt):
+    def post_inicio(self):
         try:
-            from android.permissions import request_permissions, Permission  # type: ignore
-            perms = [Permission.WRITE_EXTERNAL_STORAGE]
-            try:
-                perms += [Permission.READ_MEDIA_VIDEO, Permission.READ_MEDIA_IMAGES]
-            except AttributeError:
-                perms.append(Permission.READ_EXTERNAL_STORAGE)
-            request_permissions(perms)
-        except Exception as e:
-            self._log(f"Permisos: {e}")
+            self.app_data_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
 
-    def _bin(self, name):
+        self.set_default_output()
+        self.status("App lista")
+        self.log("ClipForge iniciado correctamente")
+        self.log("Toca Buscar para seleccionar un video")
+        self.log("Nota: ffmpeg se revisa solo al generar, no al abrir")
+
+    # ========================================================
+    # RUTAS SEGURAS
+    # ========================================================
+
+    def safe_base_dir(self):
+        try:
+            return Path(__file__).parent
+        except Exception:
+            return Path(os.getcwd())
+
+    def safe_data_dir(self):
+        try:
+            if sys.platform == "android":
+                return Path("/storage/emulated/0/ClipForgeStudio")
+            return Path.home() / ".clipforge_studio"
+        except Exception:
+            return Path(os.getcwd()) / "ClipForgeStudio"
+
+    def resolve_binary(self, name):
         suffix = ".exe" if os.name == "nt" else ""
-        local  = self.base_dir / (name + suffix)
-        if local.exists():
-            return local
-        found = shutil.which(name + suffix)
-        return Path(found) if found else local
+        full = name + suffix
 
-    # ── UI ───────────────────────────────────────────────────────────────────
-    def _ui(self):
-        root = BoxLayout()
-        with root.canvas.before:
-            Color(*C_BG)
-            r = Rectangle(pos=root.pos, size=root.size)
-        root.bind(pos=lambda i, v: setattr(r, "pos", v),
-                  size=lambda i, v: setattr(r, "size", v))
+        candidates = [
+            self.base_dir / full,
+            self.app_data_dir / full,
+            Path(os.getcwd()) / full,
+        ]
 
-        scroll = TouchScroll(do_scroll_x=False, bar_width=dp(4),
-                             bar_color=(*C_MUTED[:3], 0.6))
-        main   = BoxLayout(orientation="vertical", size_hint_y=None,
-                           spacing=dp(10), padding=[dp(10), dp(12)])
+        found = shutil.which(full)
+        if found:
+            candidates.append(Path(found))
+
+        for path in candidates:
+            try:
+                if path.exists():
+                    if sys.platform == "android":
+                        try:
+                            os.chmod(str(path), 0o755)
+                        except Exception:
+                            pass
+                    return path
+            except Exception:
+                pass
+
+        return self.base_dir / full
+
+    # ========================================================
+    # INTERFAZ
+    # ========================================================
+
+    def crear_interfaz(self):
+        scroll = ScrollView(do_scroll_x=False)
+
+        main = BoxLayout(
+            orientation="vertical",
+            spacing=dp(10),
+            padding=dp(12),
+            size_hint_y=None,
+        )
         main.bind(minimum_height=main.setter("height"))
         scroll.add_widget(main)
-        root.add_widget(scroll)
 
-        main.add_widget(lbl("✂  ClipForge Studio", C_GREEN, 20, bold=True, height=dp(44)))
-        main.add_widget(lbl("Corta y exporta tus videos", C_MUTED, 12, height=dp(20)))
-        main.add_widget(Widget(size_hint_y=None, height=dp(4)))
+        main.add_widget(Label(
+            text="ClipForge Studio",
+            color=self.text,
+            font_size=dp(26),
+            bold=True,
+            size_hint_y=None,
+            height=dp(40),
+        ))
 
-        main.add_widget(self._s_video())
-        main.add_widget(self._s_clips())
-        main.add_widget(self._s_wm())
-        main.add_widget(self._s_salida())
-        main.add_widget(self._s_drive())
-        main.add_widget(self._s_proceso())
-        main.add_widget(self._s_log())
-        main.add_widget(Widget(size_hint_y=None, height=dp(24)))
-        return root
+        main.add_widget(Label(
+            text="Cortar videos para APK Android",
+            color=self.muted,
+            font_size=dp(14),
+            size_hint_y=None,
+            height=dp(28),
+        ))
 
-    def _card(self, title):
-        c = Card(orientation="vertical", spacing=dp(8),
-                 padding=[dp(10), dp(10)], size_hint_y=None)
-        c.bind(minimum_height=c.setter("height"))
-        c.add_widget(lbl(title, C_GREEN, 13, bold=True, height=dp(28)))
-        c.add_widget(sep())
-        return c
+        main.add_widget(self.titulo("Archivos"))
 
-    def _menu(self, title, ops, cb):
-        content = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(8))
-        p = Popup(title=title, content=content, size_hint=(0.82, None),
-                  height=dp(70 + 52 * len(ops)),
-                  background_color=C_CARD, title_color=C_TEXT)
-        for op in ops:
-            b = btn(op, C_FIELD, height=dp(46))
-            def sel(inst, o=op): p.dismiss(); cb(o)
-            b.bind(on_release=sel)
-            content.add_widget(b)
-        p.open()
+        row_video = self.fila()
+        self.video_field = self.input("Video seleccionado")
+        row_video.add_widget(self.video_field)
+        row_video.add_widget(self.boton("Buscar", self.pick_video, self.blue, dp(95)))
+        main.add_widget(row_video)
 
-    # ── Secciones ────────────────────────────────────────────────────────────
-    def _s_video(self):
-        c = self._card("📹  Video")
-        self.video_lbl = lbl("Sin video seleccionado", C_MUTED, 12, height=dp(26))
-        c.add_widget(self.video_lbl)
-        b = btn("Seleccionar video", C_BLUE)
-        b.bind(on_release=lambda *a: self._selector("video", self._set_video))
-        c.add_widget(b)
-        return c
+        row_out = self.fila()
+        self.out_field = self.input("Carpeta de salida")
+        row_out.add_widget(self.out_field)
+        row_out.add_widget(self.boton("Carpeta", self.pick_output, self.blue, dp(95)))
+        main.add_widget(row_out)
 
-    def _s_clips(self):
-        c = self._card("✂  Clips")
+        row_wm = self.fila()
+        self.wm_field = self.input("Marca de agua opcional")
+        row_wm.add_widget(self.wm_field)
+        row_wm.add_widget(self.boton("Imagen", self.pick_watermark, self.blue, dp(95)))
+        main.add_widget(row_wm)
 
-        r1 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        r1.add_widget(lbl("Prefijo:", C_MUTED, 12, height=dp(44)))
-        self.prefix = field("Parte", "Parte")
-        r1.add_widget(self.prefix)
-        c.add_widget(r1)
+        main.add_widget(self.titulo("Tiempos"))
 
-        r2 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        r2.add_widget(lbl("Calidad:", C_MUTED, 12, height=dp(44)))
-        self.q_btn = btn(self.quality, C_FIELD, height=dp(44))
-        self.q_btn.bind(on_release=lambda *a: self._menu(
-            "Calidad", list(QUALITY_PRESETS), lambda v: (
-                setattr(self, "quality", v), setattr(self.q_btn, "text", v))))
-        r2.add_widget(self.q_btn)
-        c.add_widget(r2)
+        self.prefix_field = self.input("Prefijo de clips")
+        self.prefix_field.text = "Parte"
+        main.add_widget(self.prefix_field)
 
-        dr = BoxLayout(size_hint_y=None, height=dp(32), spacing=dp(8))
-        dr.add_widget(lbl("Duración:", C_MUTED, 12, height=dp(32)))
-        self.dur_lbl = lbl("10 s", C_TEXT, 12, height=dp(32))
-        dr.add_widget(self.dur_lbl)
-        c.add_widget(dr)
-        self.dur_sl = Slider(min=2, max=180, value=10, step=1,
-                             size_hint_y=None, height=dp(38))
-        self.dur_sl.bind(value=lambda i, v: setattr(self.dur_lbl, "text", f"{int(v)} s"))
-        c.add_widget(self.dur_sl)
+        row_dur = self.fila()
+        row_dur.add_widget(self.label_peq("Duracion"))
+        self.duration_slider = Slider(min=2, max=180, value=10, step=1)
+        self.duration_slider.bind(value=self.on_duration_change)
+        row_dur.add_widget(self.duration_slider)
+        self.duration_label = self.label_peq("10 s", dp(60))
+        row_dur.add_widget(self.duration_label)
+        main.add_widget(row_dur)
 
-        c.add_widget(lbl("Inicio (min : seg):", C_MUTED, 11, height=dp(22)))
-        tr = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        self.ini_m = field("0", "0"); self.ini_m.size_hint_x = 0.45
-        self.ini_s = field("0", "0"); self.ini_s.size_hint_x = 0.45
-        tr.add_widget(self.ini_m)
-        tr.add_widget(lbl(":", C_TEXT, 16, height=dp(44)))
-        tr.add_widget(self.ini_s)
-        c.add_widget(tr)
+        grid_tiempo = GridLayout(cols=2, spacing=dp(8), size_hint_y=None, height=dp(120))
 
-        c.add_widget(lbl("Fin (min : seg)  — 0:0 = hasta el final:", C_MUTED, 11, height=dp(22)))
-        tr2 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        self.fin_m = field("0", "0"); self.fin_m.size_hint_x = 0.45
-        self.fin_s = field("0", "0"); self.fin_s.size_hint_x = 0.45
-        tr2.add_widget(self.fin_m)
-        tr2.add_widget(lbl(":", C_TEXT, 16, height=dp(44)))
-        tr2.add_widget(self.fin_s)
-        c.add_widget(tr2)
-        return c
+        box_inicio = BoxLayout(orientation="vertical", spacing=dp(5))
+        box_inicio.add_widget(self.label_normal("Inicio"))
+        fila_inicio = self.fila()
+        self.ini_m = self.input("min")
+        self.ini_s = self.input("seg")
+        self.ini_m.text = "0"
+        self.ini_s.text = "0"
+        fila_inicio.add_widget(self.ini_m)
+        fila_inicio.add_widget(self.label_peq(":", dp(20)))
+        fila_inicio.add_widget(self.ini_s)
+        box_inicio.add_widget(fila_inicio)
 
-    def _s_wm(self):
-        c = self._card("💧  Marca de agua (opcional)")
-        self.wm_lbl = lbl("Sin marca de agua", C_MUTED, 12, height=dp(26))
-        c.add_widget(self.wm_lbl)
-        b = btn("Seleccionar imagen", C_BLUE)
-        b.bind(on_release=lambda *a: self._selector("image", self._set_wm))
-        c.add_widget(b)
+        box_fin = BoxLayout(orientation="vertical", spacing=dp(5))
+        box_fin.add_widget(self.label_normal("Fin 0=total"))
+        fila_fin = self.fila()
+        self.fin_m = self.input("min")
+        self.fin_s = self.input("seg")
+        self.fin_m.text = "0"
+        self.fin_s.text = "0"
+        fila_fin.add_widget(self.fin_m)
+        fila_fin.add_widget(self.label_peq(":", dp(20)))
+        fila_fin.add_widget(self.fin_s)
+        box_fin.add_widget(fila_fin)
 
-        r = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        r.add_widget(lbl("Posición:", C_MUTED, 12, height=dp(44)))
-        self.wm_pos_btn = btn(self.wm_pos, C_FIELD, height=dp(44))
-        self.wm_pos_btn.bind(on_release=lambda *a: self._menu(
-            "Posición", list(WM_POSITIONS), lambda v: (
-                setattr(self, "wm_pos", v), setattr(self.wm_pos_btn, "text", v))))
-        r.add_widget(self.wm_pos_btn)
-        c.add_widget(r)
+        grid_tiempo.add_widget(box_inicio)
+        grid_tiempo.add_widget(box_fin)
+        main.add_widget(grid_tiempo)
 
-        for label, attr_lbl, attr_sl, mn, mx, val, step, fmt in [
-            ("Tamaño", "wm_sz_lbl", "wm_sz_sl", 40, 500, 120, 10, lambda v: f"{int(v)} px"),
-            ("Opacidad", "wm_op_lbl", "wm_op_sl", 0.1, 1.0, 0.8, 0.05, lambda v: f"{int(round(v*100))}%"),
-        ]:
-            row = BoxLayout(size_hint_y=None, height=dp(32), spacing=dp(8))
-            row.add_widget(lbl(f"{label}:", C_MUTED, 12, height=dp(32)))
-            ll = lbl(fmt(val), C_TEXT, 12, height=dp(32))
-            setattr(self, attr_lbl, ll)
-            row.add_widget(ll)
-            c.add_widget(row)
-            sl = Slider(min=mn, max=mx, value=val, step=step,
-                        size_hint_y=None, height=dp(36))
-            lbl_ref = ll; fmt_ref = fmt
-            sl.bind(value=lambda i, v, l=lbl_ref, f=fmt_ref: setattr(l, "text", f(v)))
-            setattr(self, attr_sl, sl)
-            c.add_widget(sl)
-        return c
+        main.add_widget(self.titulo("Calidad y marca de agua"))
 
-    def _s_salida(self):
-        c = self._card("📁  Salida")
-        self.out_input = field("Ruta de salida", str(self.out_dir))
-        c.add_widget(self.out_input)
-        c.add_widget(lbl(f"Predeterminado: {self.out_dir}", C_MUTED, 10, height=dp(20)))
-        return c
+        row_quality = self.fila()
+        row_quality.add_widget(self.label_peq("Calidad"))
+        self.quality_btn = self.boton("Balanceada", self.popup_quality, self.field)
+        row_quality.add_widget(self.quality_btn)
+        main.add_widget(row_quality)
 
-    def _s_drive(self):
-        c = self._card("☁  Google Drive (opcional)")
-        r = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        r.add_widget(lbl("Subir a Drive:", C_TEXT, 12, height=dp(44)))
-        self.drive_sw = Switch(active=False, size_hint=(None, None), size=(dp(70), dp(44)))
-        r.add_widget(self.drive_sw)
-        c.add_widget(r)
-        self.drive_id = field("Folder ID (opcional)")
-        c.add_widget(self.drive_id)
-        return c
+        row_pos = self.fila()
+        row_pos.add_widget(self.label_peq("Posicion"))
+        self.position_btn = self.boton("Arriba derecha", self.popup_position, self.field)
+        row_pos.add_widget(self.position_btn)
+        main.add_widget(row_pos)
 
-    def _s_proceso(self):
-        c = self._card("⚙  Proceso")
-        self.status_lbl = lbl("Listo", C_MUTED, 12, height=dp(26))
-        c.add_widget(self.status_lbl)
-        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=dp(14))
-        c.add_widget(self.progress)
-        r = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
-        self.gen_btn = btn("▶  Generar clips", C_GREEN)
-        self.gen_btn.bind(on_release=lambda *a: self.start_generation())
-        self.can_btn = btn("✕  Cancelar", C_RED)
-        self.can_btn.bind(on_release=lambda *a: self.cancel_generation())
-        self.can_btn.disabled = True
-        r.add_widget(self.gen_btn)
-        r.add_widget(self.can_btn)
-        c.add_widget(r)
-        return c
+        row_size = self.fila()
+        row_size.add_widget(self.label_peq("Tamano"))
+        self.wm_size_slider = Slider(min=40, max=500, value=120, step=10)
+        self.wm_size_slider.bind(value=self.on_wm_size_change)
+        row_size.add_widget(self.wm_size_slider)
+        self.wm_size_label = self.label_peq("120 px", dp(75))
+        row_size.add_widget(self.wm_size_label)
+        main.add_widget(row_size)
 
-    def _s_log(self):
-        c = self._card("📋  Registro")
-        self.log_txt = TextInput(
-            text="", readonly=True, multiline=True,
-            background_color=C_DARK, foreground_color=C_TEXT,
-            font_size=sp(11), size_hint_y=None, height=dp(160),
+        row_opacity = self.fila()
+        row_opacity.add_widget(self.label_peq("Opacidad"))
+        self.wm_opacity_slider = Slider(min=0.10, max=1.0, value=0.80, step=0.05)
+        self.wm_opacity_slider.bind(value=self.on_wm_opacity_change)
+        row_opacity.add_widget(self.wm_opacity_slider)
+        self.wm_opacity_label = self.label_peq("80%", dp(60))
+        row_opacity.add_widget(self.wm_opacity_label)
+        main.add_widget(row_opacity)
+
+        main.add_widget(self.titulo("Proceso"))
+
+        row_progress = self.fila(dp(32))
+        self.progress = ProgressBar(max=100, value=0)
+        self.progress_label = self.label_peq("0%", dp(55))
+        row_progress.add_widget(self.progress)
+        row_progress.add_widget(self.progress_label)
+        main.add_widget(row_progress)
+
+        self.status_label = Label(
+            text="Cargando...",
+            color=self.text,
+            font_size=dp(15),
+            size_hint_y=None,
+            height=dp(34),
         )
-        c.add_widget(self.log_txt)
-        return c
+        main.add_widget(self.status_label)
 
-    # ── Selector de archivos con MediaStore ──────────────────────────────────
-    def _selector(self, mime, callback):
-        is_video = mime == "video"
-        exts     = (".mp4", ".mov", ".mkv", ".avi", ".m4v") if is_video else (".png", ".jpg", ".jpeg")
-        title    = "Seleccionar video" if is_video else "Seleccionar imagen"
+        row_buttons = self.fila(dp(50))
+        self.generate_btn = self.boton("Generar", self.start_generation, self.green)
+        self.cancel_btn = self.boton("Cancelar", self.cancel_generation, self.red)
+        self.cancel_btn.disabled = True
+        row_buttons.add_widget(self.generate_btn)
+        row_buttons.add_widget(self.cancel_btn)
+        main.add_widget(row_buttons)
 
-        layout  = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(8))
-        st_lbl  = lbl("Buscando...", C_MUTED, 12, height=dp(28))
-        scroll  = ScrollView(size_hint_y=1)
-        grid    = GridLayout(cols=1, spacing=dp(3), size_hint_y=None)
-        grid.bind(minimum_height=grid.setter("height"))
-        c_btn   = btn("Cancelar", C_RED, height=dp(48))
+        main.add_widget(self.titulo("Registro"))
 
-        scroll.add_widget(grid)
-        layout.add_widget(st_lbl)
-        layout.add_widget(scroll)
-        layout.add_widget(c_btn)
+        self.log_label = Label(
+            text="",
+            color=(0.88, 0.91, 0.93, 1),
+            font_size=dp(12),
+            size_hint_y=None,
+            halign="left",
+            valign="top",
+        )
+        self.log_label.bind(texture_size=lambda inst, val: setattr(inst, "height", val[1] + dp(20)))
+        self.log_label.bind(size=lambda inst, val: setattr(inst, "text_size", (inst.width, None)))
 
-        popup = Popup(title=title, content=layout, size_hint=(0.97, 0.93),
-                      background_color=C_DARK, title_color=C_TEXT)
-        c_btn.bind(on_release=lambda *a: popup.dismiss())
+        log_scroll = ScrollView(size_hint_y=None, height=dp(180), do_scroll_x=False)
+        log_scroll.add_widget(self.log_label)
+        main.add_widget(log_scroll)
+
+        return scroll
+
+    def titulo(self, text):
+        return Label(
+            text=text,
+            color=self.text,
+            font_size=dp(18),
+            bold=True,
+            size_hint_y=None,
+            height=dp(35),
+        )
+
+    def label_normal(self, text):
+        return Label(
+            text=text,
+            color=self.muted,
+            font_size=dp(14),
+            size_hint_y=None,
+            height=dp(28),
+        )
+
+    def label_peq(self, text, width=dp(82)):
+        return Label(
+            text=text,
+            color=self.muted,
+            font_size=dp(14),
+            size_hint=(None, 1),
+            width=width,
+        )
+
+    def fila(self, height=dp(52)):
+        return BoxLayout(
+            orientation="horizontal",
+            spacing=dp(8),
+            size_hint_y=None,
+            height=height,
+        )
+
+    def input(self, hint):
+        return TextInput(
+            text="",
+            hint_text=hint,
+            multiline=False,
+            background_color=self.field,
+            foreground_color=self.text,
+            cursor_color=self.text,
+            hint_text_color=self.muted,
+            padding=[dp(8), dp(12), dp(8), dp(8)],
+            font_size=dp(14),
+            size_hint_y=None,
+            height=dp(48),
+        )
+
+    def boton(self, text, callback, color, width=None):
+        btn = Button(
+            text=text,
+            background_normal="",
+            background_color=color,
+            color=(1, 1, 1, 1),
+            font_size=dp(14),
+            bold=True,
+        )
+
+        if width:
+            btn.size_hint_x = None
+            btn.width = width
+
+        btn.bind(on_release=lambda *a: callback())
+        return btn
+
+    # ========================================================
+    # BOTONES Y POPUPS
+    # ========================================================
+
+    def on_duration_change(self, instance, value):
+        self.duration_label.text = f"{int(value)} s"
+
+    def on_wm_size_change(self, instance, value):
+        self.wm_size_label.text = f"{int(value)} px"
+
+    def on_wm_opacity_change(self, instance, value):
+        self.wm_opacity_label.text = f"{int(round(value * 100))}%"
+
+    def popup_quality(self):
+        self.popup_opciones("Calidad", list(QUALITY_PRESETS.keys()), self.set_quality)
+
+    def popup_position(self):
+        self.popup_opciones("Posicion", list(WM_POSITIONS.keys()), self.set_position)
+
+    def set_quality(self, value):
+        self.quality = value
+        self.quality_btn.text = value
+
+    def set_position(self, value):
+        self.wm_position = value
+        self.position_btn.text = value
+
+    def popup_opciones(self, title, options, callback):
+        layout = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
+
+        popup = Popup(
+            title=title,
+            content=layout,
+            size_hint=(0.85, None),
+            height=dp(90 + len(options) * 55),
+        )
+
+        for opt in options:
+            btn = Button(
+                text=opt,
+                size_hint_y=None,
+                height=dp(48),
+                background_normal="",
+                background_color=self.blue,
+                color=(1, 1, 1, 1),
+            )
+
+            def choose(instance, value=opt):
+                callback(value)
+                popup.dismiss()
+
+            btn.bind(on_release=choose)
+            layout.add_widget(btn)
+
         popup.open()
 
-        def buscar():
-            archivos = []
+    # ========================================================
+    # ARCHIVOS
+    # ========================================================
 
-            if sys.platform == "android":
-                # MediaStore — no necesita permisos de filesystem
-                try:
-                    from jnius import autoclass  # type: ignore
-                    PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                    ctx = PythonActivity.mActivity
-                    if is_video:
-                        MS = autoclass("android.provider.MediaStore$Video$Media")
-                    else:
-                        MS = autoclass("android.provider.MediaStore$Images$Media")
-
-                    cursor = ctx.getContentResolver().query(
-                        MS.EXTERNAL_CONTENT_URI,
-                        ["_data", "_display_name", "date_modified"],
-                        None, None, "date_modified DESC"
-                    )
-                    if cursor:
-                        idx_data = cursor.getColumnIndex("_data")
-                        while cursor.moveToNext() and len(archivos) < 500:
-                            try:
-                                p = cursor.getString(idx_data)
-                                if p and os.path.exists(p):
-                                    archivos.append(p)
-                            except Exception:
-                                continue
-                        cursor.close()
-                except Exception as e:
-                    self._log(f"MediaStore: {e}")
-
-            # Fallback para desktop o si MediaStore falló
-            if not archivos:
-                roots = ["/storage/emulated/0/DCIM",
-                         "/storage/emulated/0/Movies",
-                         "/storage/emulated/0/Download",
-                         "/storage/emulated/0"] if sys.platform == "android" \
-                        else [str(Path.home() / "Videos"), str(Path.home())]
-                for root in roots:
-                    try:
-                        for dp2, _, fs in os.walk(root):
-                            for f in fs:
-                                if f.lower().endswith(exts):
-                                    archivos.append(os.path.join(dp2, f))
-                            if len(archivos) >= 500:
-                                break
-                    except Exception:
-                        continue
-
-            def mostrar(dt):
-                grid.clear_widgets()
-                if archivos:
-                    st_lbl.text = f"{len(archivos)} archivo(s) encontrado(s)"
-                    for path in archivos:
-                        nombre = os.path.basename(path)
-                        b = Button(
-                            text=nombre, size_hint_y=None, height=dp(50),
-                            background_color=C_CARD, color=C_TEXT,
-                            halign="left", font_size=sp(12), background_normal="",
-                        )
-                        b.bind(size=lambda i, v: setattr(i, "text_size", (v[0]-dp(16), None)))
-                        def on_tap(inst, p=path):
-                            popup.dismiss()
-                            Clock.schedule_once(lambda dt: callback(p), 0.15)
-                        b.bind(on_release=on_tap)
-                        grid.add_widget(b)
-                else:
-                    st_lbl.text = "No se encontraron archivos"
-                    grid.add_widget(lbl(
-                        "Ve a:\nAjustes → Apps → ClipForge\n→ Permisos → Archivos\n→ Permitir acceso",
-                        (1, 0.6, 0.2, 1), 13, height=dp(90)
-                    ))
-
-            Clock.schedule_once(mostrar)
-
-        threading.Thread(target=buscar, daemon=True).start()
-
-    def _set_video(self, path):
-        self.video_path = path
-        self.video_lbl.text  = f"✓  {os.path.basename(path)}"
-        self.video_lbl.color = C_GREEN
-        self._log(f"Video: {path}")
-
-    def _set_wm(self, path):
-        self.wm_path = path
-        self.wm_lbl.text  = f"✓  {os.path.basename(path)}"
-        self.wm_lbl.color = C_GREEN
-        self._log(f"Marca de agua: {path}")
-
-    # ── Helpers UI ───────────────────────────────────────────────────────────
-    def _log(self, msg):
-        def _d(dt):
-            self.log_txt.text += f"{msg}\n"
-            self.log_txt.cursor = (0, len(self.log_txt.text))
-        Clock.schedule_once(_d)
-
-    def _status(self, msg):
-        Clock.schedule_once(lambda dt: setattr(self.status_lbl, "text", msg))
-
-    def _pct(self, v):
-        Clock.schedule_once(lambda dt: setattr(self.progress, "value", v))
-
-    def _running(self, v):
-        def _d(dt):
-            self.gen_btn.disabled = v
-            self.can_btn.disabled = not v
-        Clock.schedule_once(_d)
-
-    def _alert(self, title, msg):
-        content = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
-        content.add_widget(lbl(msg, C_TEXT, 13, height=dp(100)))
-        ok = btn("OK", C_GREEN, height=dp(46))
-        p  = Popup(title=title, content=content, size_hint=(0.88, None),
-                   height=dp(220), background_color=C_CARD, title_color=C_TEXT)
-        ok.bind(on_release=lambda *a: p.dismiss())
-        content.add_widget(ok)
-        Clock.schedule_once(lambda dt: p.open())
-
-    # ── Validación ───────────────────────────────────────────────────────────
-    def _int(self, v, name):
+    def set_default_output(self):
         try:
-            n = int(str(v).strip())
-        except ValueError:
-            raise ValueError(f"{name} debe ser entero.")
+            if sys.platform == "android":
+                out = Path("/storage/emulated/0/Movies/ClipForge")
+            else:
+                out = Path.home() / "Videos" / "ClipForge"
+
+            try:
+                out.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+            self.out_field.text = str(out)
+        except Exception:
+            self.out_field.text = str(self.app_data_dir)
+
+    def pick_video(self):
+        self.scan_popup(
+            "Seleccionar video",
+            (".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm"),
+            self.on_video_selected,
+        )
+
+    def pick_watermark(self):
+        self.scan_popup(
+            "Seleccionar imagen",
+            (".png", ".jpg", ".jpeg", ".webp"),
+            self.on_watermark_selected,
+        )
+
+    def pick_output(self):
+        self.set_default_output()
+        self.dialog("Carpeta de salida", f"Los clips se guardaran en:\n{self.out_field.text}")
+
+    def scan_popup(self, title, extensions, callback):
+        layout = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(8))
+
+        status = Label(
+            text="Buscando archivos...",
+            color=self.text,
+            size_hint_y=None,
+            height=dp(34),
+        )
+
+        scroll = ScrollView(do_scroll_x=False)
+        grid = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
+        grid.bind(minimum_height=grid.setter("height"))
+        scroll.add_widget(grid)
+
+        cancel_btn = Button(
+            text="Cancelar",
+            size_hint_y=None,
+            height=dp(48),
+            background_normal="",
+            background_color=(0.30, 0.30, 0.30, 1),
+            color=(1, 1, 1, 1),
+        )
+
+        layout.add_widget(status)
+        layout.add_widget(scroll)
+        layout.add_widget(cancel_btn)
+
+        popup = Popup(title=title, content=layout, size_hint=(0.96, 0.92))
+        cancel_btn.bind(on_release=lambda *a: popup.dismiss())
+        popup.open()
+
+        def scan_thread():
+            files = self.scan_files(extensions)
+
+            def update(dt):
+                grid.clear_widgets()
+
+                if not files:
+                    status.text = "No se encontraron archivos"
+                    grid.add_widget(Label(
+                        text="No se encontraron archivos.\nRevisa permisos de almacenamiento.",
+                        color=(1, 0.45, 0.45, 1),
+                        size_hint_y=None,
+                        height=dp(100),
+                    ))
+                    return
+
+                status.text = f"{len(files)} archivo(s) encontrado(s)"
+
+                for path in files:
+                    name = os.path.basename(path)
+
+                    btn = Button(
+                        text=name,
+                        size_hint_y=None,
+                        height=dp(54),
+                        background_normal="",
+                        background_color=self.field,
+                        color=(1, 1, 1, 1),
+                    )
+
+                    def elegir(instance, p=path):
+                        popup.dismiss()
+                        callback(p)
+
+                    btn.bind(on_release=elegir)
+                    grid.add_widget(btn)
+
+            Clock.schedule_once(update, 0)
+
+        threading.Thread(target=scan_thread, daemon=True).start()
+
+    def scan_files(self, extensions):
+        if sys.platform == "android":
+            roots = [
+                "/storage/emulated/0/DCIM",
+                "/storage/emulated/0/Movies",
+                "/storage/emulated/0/Download",
+                "/storage/emulated/0/Pictures",
+                "/storage/emulated/0/WhatsApp/Media/WhatsApp Video",
+                "/storage/emulated/0/WhatsApp/Media/WhatsApp Images",
+            ]
+        else:
+            roots = [
+                str(Path.home() / "Videos"),
+                str(Path.home() / "Downloads"),
+                str(Path.home() / "Pictures"),
+            ]
+
+        found = []
+
+        for root in roots:
+            if not os.path.exists(root):
+                continue
+
+            try:
+                for dirpath, dirnames, filenames in os.walk(root):
+                    for name in filenames:
+                        if name.lower().endswith(extensions):
+                            found.append(os.path.join(dirpath, name))
+
+                    if len(found) >= 200:
+                        break
+            except Exception:
+                pass
+
+        found = list(dict.fromkeys(found))
+
+        try:
+            found.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        except Exception:
+            pass
+
+        return found[:200]
+
+    def on_video_selected(self, path):
+        self.video_field.text = path
+        self.status("Video seleccionado")
+        self.log(f"Video: {path}")
+
+    def on_watermark_selected(self, path):
+        self.wm_field.text = path
+        self.status("Marca de agua seleccionada")
+        self.log(f"Marca de agua: {path}")
+
+    # ========================================================
+    # VALIDACION Y FFMPEG
+    # ========================================================
+
+    def safe_int(self, value, name):
+        try:
+            n = int(str(value).strip())
+        except Exception:
+            raise ValueError(f"{name} debe ser un numero entero")
+
         if n < 0:
-            raise ValueError(f"{name} no puede ser negativo.")
+            raise ValueError(f"{name} no puede ser negativo")
+
         return n
 
-    def _sec(self, m, s, pref):
-        mi = self._int(m, f"{pref} min")
-        si = self._int(s, f"{pref} seg")
-        if si > 59:
-            raise ValueError(f"{pref} seg: máximo 59.")
-        return mi * 60 + si
+    def time_to_seconds(self, minutes, seconds, label):
+        m = self.safe_int(minutes, f"{label} minutos")
+        s = self.safe_int(seconds, f"{label} segundos")
 
-    def _validate(self):
-        if not self.video_path or not os.path.exists(self.video_path):
-            raise ValueError("Selecciona un video primero.")
+        if s > 59:
+            raise ValueError(f"{label} segundos debe estar entre 0 y 59")
+
+        return m * 60 + s
+
+    def check_ffmpeg_now(self):
+        self.ffmpeg = self.resolve_binary("ffmpeg")
+        self.ffprobe = self.resolve_binary("ffprobe")
+
         if not self.ffmpeg.exists():
-            raise FileNotFoundError(f"ffmpeg no encontrado en: {self.base_dir}")
-        out = self.out_input.text.strip()
-        if not out:
-            raise ValueError("Especifica carpeta de salida.")
-        Path(out).mkdir(parents=True, exist_ok=True)
+            raise FileNotFoundError(
+                "ffmpeg no encontrado.\n\n"
+                f"Ruta esperada:\n{self.ffmpeg}\n\n"
+                "La app abre, pero para generar clips debes incluir ffmpeg."
+            )
 
-        s   = self._sec(self.ini_m.text, self.ini_s.text, "Inicio")
-        e   = self._sec(self.fin_m.text, self.fin_s.text, "Fin")
-        dur = int(self.dur_sl.value)
-        tot = self._probe_dur(Path(self.video_path))
+        if not self.ffprobe.exists():
+            raise FileNotFoundError(
+                "ffprobe no encontrado.\n\n"
+                f"Ruta esperada:\n{self.ffprobe}\n\n"
+                "La app abre, pero para generar clips debes incluir ffprobe."
+            )
 
-        if s >= tot:
-            raise ValueError("Inicio mayor que duración del video.")
-        if e == 0 or e > tot:
-            e = int(math.ceil(tot))
-        if e <= s:
-            raise ValueError("Fin debe ser mayor que inicio.")
+    def probe_duration(self, video_path):
+        cmd = [
+            str(self.ffprobe),
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=nokey=1:noprint_wrappers=1",
+            str(video_path),
+        ]
 
-        clips = math.ceil((e - s) / dur)
+        out = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
+        return float(out)
+
+    def validate_settings(self):
+        self.check_ffmpeg_now()
+
+        video_raw = self.video_field.text.strip()
+        out_raw = self.out_field.text.strip()
+        wm_raw = self.wm_field.text.strip()
+
+        if not video_raw:
+            raise ValueError("Selecciona un video")
+
+        video = Path(video_raw)
+
+        if not video.exists():
+            raise FileNotFoundError("El video seleccionado no existe")
+
+        if not out_raw:
+            raise ValueError("Selecciona carpeta de salida")
+
+        out_dir = Path(out_raw)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        wm = Path(wm_raw) if wm_raw else None
+
+        if wm and not wm.exists():
+            raise FileNotFoundError("La marca de agua no existe")
+
+        start = self.time_to_seconds(self.ini_m.text, self.ini_s.text, "Inicio")
+        end = self.time_to_seconds(self.fin_m.text, self.fin_s.text, "Fin")
+        clip_duration = int(self.duration_slider.value)
+
+        total = self.probe_duration(video)
+
+        if start >= total:
+            raise ValueError("El inicio supera la duracion del video")
+
+        if end == 0 or end > total:
+            end = int(math.ceil(total))
+
+        if end <= start:
+            raise ValueError("El final debe ser mayor que el inicio")
+
+        clips_total = math.ceil((end - start) / clip_duration)
+
+        if clips_total <= 0:
+            raise ValueError("No hay clips para generar")
+
         return {
-            "video":    Path(self.video_path),
-            "out_dir":  Path(out),
-            "wm":       Path(self.wm_path) if self.wm_path else None,
-            "prefix":   self.prefix.text.strip() or "Parte",
-            "start": s, "end": e, "dur": dur, "clips": clips,
-            "quality":  self.quality,
-            "upload":   self.drive_sw.active,
-            "folder":   self.drive_id.text.strip() or None,
-            "wm_size":  int(self.wm_sz_sl.value),
-            "wm_op":    float(self.wm_op_sl.value),
-            "wm_pos":   self.wm_pos,
+            "video": video,
+            "out_dir": out_dir,
+            "watermark": wm,
+            "prefix": self.prefix_field.text.strip() or "Parte",
+            "start": start,
+            "end": end,
+            "clip_duration": clip_duration,
+            "clips_total": clips_total,
+            "quality": self.quality,
+            "wm_position": self.wm_position,
+            "wm_size": int(self.wm_size_slider.value),
+            "wm_opacity": float(self.wm_opacity_slider.value),
         }
 
-    # ── FFmpeg ───────────────────────────────────────────────────────────────
-    def _probe_dur(self, path):
-        out = subprocess.check_output([
-            str(self.ffprobe), "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=nokey=1:noprint_wrappers=1", str(path)
-        ], text=True)
-        return float(out.strip())
+    def build_filter_complex(self, settings, clip_index):
+        txt = self.escape_drawtext(f"{settings['prefix']} {clip_index}")
 
-    def _run_ff(self, cmd):
-        with self.proc_lock:
-            self.current_process = subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace")
-            proc = self.current_process
-        while proc.poll() is None:
-            if self.cancel_event.is_set():
-                proc.terminate()
-                try: proc.wait(5)
-                except subprocess.TimeoutExpired: proc.kill()
-                raise UserCancelled()
-            time.sleep(0.15)
-        _, err = proc.communicate()
-        with self.proc_lock:
-            if self.current_process is proc:
-                self.current_process = None
-        if proc.returncode != 0:
-            raise RuntimeError(f"FFmpeg:\n{(err or '')[-600:]}")
+        drawtext = (
+            f"drawtext=text='{txt}':"
+            "fontcolor=white:"
+            "fontsize=34:"
+            "borderw=2:"
+            "bordercolor=black@0.70:"
+            "x=(w-text_w)/2:"
+            "y=24"
+        )
 
-    def _cmd(self, cfg, idx, s, d, out):
-        q  = QUALITY_PRESETS[cfg["quality"]]
-        fc = self._fc(cfg, idx)
-        c  = [str(self.ffmpeg), "-hide_banner", "-loglevel", "error",
-              "-y", "-ss", f"{s:.3f}", "-i", str(cfg["video"])]
-        if cfg["wm"]:
-            c += ["-i", str(cfg["wm"])]
-        c += ["-t", f"{d:.3f}", "-filter_complex", fc,
-              "-map", "[v]", "-map", "0:a?",
-              "-c:v", "libx264", "-preset", q["preset"],
-              "-crf", str(q["crf"]), "-profile:v", "high",
-              "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-              "-c:a", "aac", "-b:a", "192k", str(out)]
-        return c
+        chains = []
+        base = "0:v"
 
-    def _fc(self, cfg, idx):
-        def esc(t):
-            for a, b in [("\\","\\\\"),(":",r"\:"),("'",r"\'"),
-                         ("%",r"\%"),("[",r"\["),("]",r"\]")]:
-                t = t.replace(a, b)
-            return t
-        def font():
-            for p in [self.base_dir/"arial.ttf",
-                      Path("/system/fonts/Roboto-Regular.ttf"),
-                      Path("/system/fonts/DroidSans.ttf"),
-                      Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-                      Path("C:/Windows/Fonts/arial.ttf")]:
-                if p.exists():
-                    ep = str(p).replace("\\","\\\\").replace(":",r"\:").replace("'",r"\'")
-                    return f"fontfile='{ep}':"
-            return ""
-        dt = (f"drawtext={font()}text='{esc(cfg['prefix']+' '+str(idx))}':"
-              "fontcolor=white:fontsize=34:borderw=2:bordercolor=black@0.65:"
-              "x=(w-text_w)/2:y=24:alpha='if(lt(t,1),t,1)'")
-        chains, base = [], "0:v"
-        if cfg["wm"]:
-            op = max(0.1, min(1.0, cfg["wm_op"]))
-            chains.append(f"[1:v]scale={cfg['wm_size']}:-1,format=rgba,"
-                          f"colorchannelmixer=aa={op:.2f}[wm]")
-            chains.append(f"[0:v][wm]overlay={WM_POSITIONS[cfg['wm_pos']]}[base]")
+        if settings["watermark"]:
+            pos = WM_POSITIONS[settings["wm_position"]]
+            opacity = max(0.10, min(1.0, settings["wm_opacity"]))
+
+            chains.append(
+                f"[1:v]scale={settings['wm_size']}:-1,"
+                f"format=rgba,"
+                f"colorchannelmixer=aa={opacity:.2f}[wm]"
+            )
+            chains.append(f"[0:v][wm]overlay={pos}[base]")
             base = "base"
-        chains.append(f"[{base}]{dt}[v]")
+
+        chains.append(f"[{base}]{drawtext}[v]")
         return ";".join(chains)
 
-    # ── Generación ───────────────────────────────────────────────────────────
+    def build_ffmpeg_cmd(self, settings, index, clip_start, clip_duration, output_file):
+        quality = QUALITY_PRESETS[settings["quality"]]
+        fc = self.build_filter_complex(settings, index)
+
+        cmd = [
+            str(self.ffmpeg),
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-ss", f"{clip_start:.3f}",
+            "-i", str(settings["video"]),
+        ]
+
+        if settings["watermark"]:
+            cmd += ["-i", str(settings["watermark"])]
+
+        cmd += [
+            "-t", f"{clip_duration:.3f}",
+            "-filter_complex", fc,
+            "-map", "[v]",
+            "-map", "0:a?",
+            "-c:v", "libx264",
+            "-preset", quality["preset"],
+            "-crf", quality["crf"],
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-c:a", "aac",
+            "-b:a", "160k",
+            str(output_file),
+        ]
+
+        return cmd
+
+    def escape_drawtext(self, text):
+        return (
+            str(text)
+            .replace("\\", r"\\")
+            .replace(":", r"\:")
+            .replace("'", r"\'")
+            .replace("%", r"\%")
+            .replace("[", r"\[")
+            .replace("]", r"\]")
+            .replace(",", r"\,")
+            .replace(";", r"\;")
+        )
+
+    def run_ffmpeg(self, cmd):
+        with self.process_lock:
+            self.current_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            proc = self.current_process
+
+        while proc.poll() is None:
+            if self.cancel_event.is_set():
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                raise UserCancelled("Cancelado por el usuario")
+
+            time.sleep(0.2)
+
+        stderr = proc.stderr.read() if proc.stderr else ""
+
+        with self.process_lock:
+            if self.current_process is proc:
+                self.current_process = None
+
+        if proc.returncode != 0:
+            raise RuntimeError((stderr.strip() or "FFmpeg fallo sin detalle")[-1500:])
+
+    # ========================================================
+    # GENERACION
+    # ========================================================
+
     def start_generation(self):
         if self.worker_thread and self.worker_thread.is_alive():
-            self._alert("En progreso", "Ya hay un proceso activo.")
+            self.dialog("En progreso", "Ya hay un proceso ejecutandose")
             return
+
         try:
-            cfg = self._validate()
-        except Exception as e:
-            self._alert("Validación", str(e))
+            settings = self.validate_settings()
+        except Exception as exc:
+            self.dialog("Validacion", str(exc))
+            self.log(f"Validacion: {exc}")
             return
+
+        self.progress.value = 0
+        self.progress_label.text = "0%"
+        self.log_label.text = ""
+
         self.cancel_event.clear()
-        self._pct(0)
-        self._running(True)
-        self._log("─" * 36)
-        self._log(f"Generando {cfg['clips']} clip(s)...")
+        self.set_running(True)
+        self.status("Preparando...")
+
         self.worker_thread = threading.Thread(
-            target=self._worker, args=(cfg,), daemon=True)
+            target=self.worker,
+            args=(settings,),
+            daemon=True,
+        )
         self.worker_thread.start()
+
+    def worker(self, settings):
+        created = 0
+        digits = max(3, len(str(settings["clips_total"])))
+
+        try:
+            for i in range(settings["clips_total"]):
+                if self.cancel_event.is_set():
+                    raise UserCancelled("Cancelado por el usuario")
+
+                num = i + 1
+                clip_start = settings["start"] + i * settings["clip_duration"]
+                actual = min(settings["clip_duration"], settings["end"] - clip_start)
+
+                if actual <= 0:
+                    break
+
+                out_name = f"{settings['video'].stem}_clip_{num:0{digits}d}.mp4"
+                out_file = settings["out_dir"] / out_name
+
+                self.status(f"Creando clip {num}/{settings['clips_total']}")
+                self.log(f"Creando {out_name}")
+
+                cmd = self.build_ffmpeg_cmd(settings, num, clip_start, actual, out_file)
+                self.run_ffmpeg(cmd)
+
+                created += 1
+                pct = int((num / settings["clips_total"]) * 100)
+                self.progress_update(pct)
+
+            self.progress_update(100)
+            msg = f"Listo: {created} clip(s) creados"
+            self.status(msg)
+            self.log(msg)
+            self.dialog("Finalizado", msg)
+
+        except UserCancelled as exc:
+            self.progress_update(0)
+            self.status("Cancelado")
+            self.log(str(exc))
+            self.dialog("Cancelado", str(exc))
+
+        except Exception as exc:
+            self.progress_update(0)
+            self.status("Error")
+            self.log(f"ERROR: {exc}")
+            self.dialog("Error", str(exc))
+
+            try:
+                with open("/storage/emulated/0/ClipForge_error.txt", "w", encoding="utf-8") as f:
+                    f.write(traceback.format_exc())
+            except Exception:
+                pass
+
+        finally:
+            with self.process_lock:
+                self.current_process = None
+
+            self.set_running(False)
 
     def cancel_generation(self):
         self.cancel_event.set()
-        self._status("Cancelando...")
-        with self.proc_lock:
+        self.status("Cancelando...")
+
+        with self.process_lock:
             if self.current_process and self.current_process.poll() is None:
-                try: self.current_process.terminate()
-                except Exception: pass
+                try:
+                    self.current_process.terminate()
+                except Exception:
+                    pass
 
-    def _worker(self, cfg):
-        created = uploaded = 0
-        digits  = max(3, len(str(cfg["clips"])))
-        try:
-            drv = None
-            if cfg["upload"]:
-                self._status("Conectando con Drive...")
-                self.drive.auth()
-                drv = self.drive
+    # ========================================================
+    # UI HELPERS
+    # ========================================================
 
-            for i in range(cfg["clips"]):
-                if self.cancel_event.is_set():
-                    raise UserCancelled()
-                s = cfg["start"] + i * cfg["dur"]
-                d = min(cfg["dur"], cfg["end"] - s)
-                if d <= 0:
-                    break
-                name = f"{cfg['video'].stem}_clip_{i+1:0{digits}d}.mp4"
-                out  = cfg["out_dir"] / name
-                self._status(f"Clip {i+1}/{cfg['clips']}")
-                self._log(f"→ {name}")
-                self._run_ff(self._cmd(cfg, i+1, s, d, out))
-                created += 1
-                if drv:
-                    self._status(f"Subiendo {i+1}...")
-                    info = drv.upload(out, cfg["folder"])
-                    uploaded += 1
-                    self._log(f"Drive: {info.get('name')}")
-                self._pct(int((i+1)/cfg["clips"]*100))
+    def status(self, msg):
+        Clock.schedule_once(lambda dt: setattr(self.status_label, "text", str(msg)), 0)
 
-            msg = f"✓ {created} clip(s) en:\n{cfg['out_dir']}"
-            if cfg["upload"]:
-                msg += f"\n☁ {uploaded} subido(s) a Drive"
-            self._pct(100)
-            self._status(f"✓ {created} clip(s) generados")
-            self._log(msg)
-            self._alert("Completado", msg)
+    def log(self, msg):
+        def append(dt):
+            self.log_label.text += str(msg) + "\n"
+        Clock.schedule_once(append, 0)
 
-        except UserCancelled:
-            self._status("Cancelado")
-            self._log("Cancelado.")
-            self._pct(0)
-        except Exception as e:
-            self._status("Error")
-            self._log(f"ERROR: {e}")
-            self._alert("Error", str(e))
-            self._pct(0)
-        finally:
-            self._running(False)
+    def progress_update(self, pct):
+        def update(dt):
+            self.progress.value = pct
+            self.progress_label.text = f"{pct}%"
+        Clock.schedule_once(update, 0)
+
+    def set_running(self, running):
+        def update(dt):
+            self.generate_btn.disabled = running
+            self.cancel_btn.disabled = not running
+        Clock.schedule_once(update, 0)
+
+    def dialog(self, title, text):
+        def open_popup(dt):
+            layout = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(10))
+
+            lbl = Label(
+                text=str(text),
+                color=(1, 1, 1, 1),
+                font_size=dp(14),
+            )
+
+            btn = Button(
+                text="OK",
+                size_hint_y=None,
+                height=dp(48),
+                background_normal="",
+                background_color=self.blue,
+                color=(1, 1, 1, 1),
+            )
+
+            layout.add_widget(lbl)
+            layout.add_widget(btn)
+
+            popup = Popup(
+                title=title,
+                content=layout,
+                size_hint=(0.90, None),
+                height=dp(270),
+            )
+
+            btn.bind(on_release=lambda *a: popup.dismiss())
+            popup.open()
+
+        Clock.schedule_once(open_popup, 0)
 
 
 if __name__ == "__main__":
-    ClipForgeApp().run()
+    try:
+        ClipForgeApp().run()
+    except Exception:
+        try:
+            with open("/storage/emulated/0/ClipForge_error.txt", "w", encoding="utf-8") as f:
+                f.write(traceback.format_exc())
+        except Exception:
+            pass
+        raise
