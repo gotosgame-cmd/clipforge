@@ -880,31 +880,106 @@ class ClipForgeApp(MDApp):
             self._show_dialog("Error abriendo selector", traceback.format_exc())
 
     def _pick_android(self, mime_type, callback):
-        """Abre la galería nativa de Android."""
+        """Escanea el almacenamiento y muestra los archivos en un popup interno."""
         try:
-            from android import activity  # type: ignore
-            from jnius import autoclass   # type: ignore
+            from kivy.uix.popup      import Popup
+            from kivy.uix.boxlayout  import BoxLayout
+            from kivy.uix.button     import Button
+            from kivy.uix.label      import Label
+            from kivy.uix.scrollview import ScrollView
+            from kivy.uix.gridlayout import GridLayout
 
-            self._pending_callback = callback
+            is_video = "video" in mime_type
+            exts = (".mp4", ".mov", ".mkv", ".avi", ".m4v") if is_video else (".png", ".jpg", ".jpeg")
 
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            Intent         = autoclass("android.content.Intent")
+            layout   = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(8))
+            status   = Label(text="Buscando archivos...", size_hint_y=None,
+                             height=dp(30), color=(0.8, 0.8, 0.8, 1))
+            scroll   = ScrollView(size_hint_y=1)
+            grid     = GridLayout(cols=1, spacing=dp(4), size_hint_y=None)
+            grid.bind(minimum_height=grid.setter("height"))
+            btn_cancel = Button(text="Cancelar", size_hint_y=None, height=dp(48),
+                                background_color=(0.3, 0.3, 0.3, 1))
 
-            if "video" in mime_type:
-                # Abrir galería directo en videos
-                intent = Intent(Intent.ACTION_PICK)
-                intent.setType("video/*")
-            else:
-                # Abrir galería en imágenes
-                intent = Intent(Intent.ACTION_PICK)
-                intent.setType("image/*")
+            scroll.add_widget(grid)
+            layout.add_widget(status)
+            layout.add_widget(scroll)
+            layout.add_widget(btn_cancel)
 
-            activity.bind(on_activity_result=self._on_activity_result)
-            PythonActivity.mActivity.startActivityForResult(intent, 1001)
+            popup = Popup(
+                title="Seleccionar " + ("video" if is_video else "imagen"),
+                content=layout,
+                size_hint=(0.97, 0.93),
+                background_color=(0.07, 0.09, 0.14, 1),
+                title_color=(1, 1, 1, 1),
+            )
+            btn_cancel.bind(on_release=lambda *a: popup.dismiss())
+            popup.open()
+
+            def hacer_boton(path):
+                nombre = os.path.basename(path)
+                btn = Button(
+                    text=nombre,
+                    size_hint_y=None,
+                    height=dp(52),
+                    background_color=(0.13, 0.18, 0.27, 1),
+                    color=(1, 1, 1, 1),
+                    halign="left",
+                    text_size=(None, None),
+                )
+                def seleccionar(b, p=path):
+                    popup.dismiss()
+                    Clock.schedule_once(lambda dt: callback([p]), 0.1)
+                btn.bind(on_release=seleccionar)
+                return btn
+
+            def escanear():
+                rutas_buscar = [
+                    "/storage/emulated/0/DCIM",
+                    "/storage/emulated/0/Movies",
+                    "/storage/emulated/0/Download",
+                    "/storage/emulated/0/WhatsApp/Media/WhatsApp Video",
+                    "/storage/emulated/0/Pictures",
+                    "/storage/emulated/0",
+                ]
+                encontrados = []
+                for raiz in rutas_buscar:
+                    if not os.path.exists(raiz):
+                        continue
+                    try:
+                        for dirpath, _, files in os.walk(raiz):
+                            for f in files:
+                                if f.lower().endswith(exts):
+                                    encontrados.append(os.path.join(dirpath, f))
+                            if len(encontrados) >= 200:
+                                break
+                    except Exception:
+                        continue
+
+                encontrados = list(dict.fromkeys(encontrados))  # quitar duplicados
+
+                def actualizar_ui(dt):
+                    grid.clear_widgets()
+                    if encontrados:
+                        status.text = f"{len(encontrados)} archivo(s) encontrado(s)"
+                        for p in sorted(encontrados, key=os.path.getmtime, reverse=True):
+                            grid.add_widget(hacer_boton(p))
+                    else:
+                        status.text = "No se encontraron archivos"
+                        grid.add_widget(Label(
+                            text="Activa el permiso de almacenamiento\nen Ajustes → Apps → ClipForge",
+                            color=(1, 0.4, 0.4, 1),
+                            size_hint_y=None,
+                            height=dp(60),
+                        ))
+
+                Clock.schedule_once(actualizar_ui, 0)
+
+            threading.Thread(target=escanear, daemon=True).start()
 
         except Exception:
             import traceback
-            self._show_dialog("Error al abrir galería", traceback.format_exc())
+            self._show_dialog("Error", traceback.format_exc())
 
     def _on_activity_result(self, request_code, result_code, data):
         try:
