@@ -636,20 +636,35 @@ class ClipForgeApp(MDApp):
 
     def _request_android_permissions(self):
         try:
-            from android.permissions import request_permissions, Permission, check_permission  # type: ignore
-            import android  # type: ignore
+            from android.permissions import request_permissions, Permission  # type: ignore
 
-            # Android 13+ (API 33+) usa permisos granulares por tipo de media
             perms = []
             try:
                 perms.append(Permission.READ_MEDIA_VIDEO)
                 perms.append(Permission.READ_MEDIA_IMAGES)
             except AttributeError:
-                # Android 12 o menor — usar permiso general
                 perms.append(Permission.READ_EXTERNAL_STORAGE)
-
             perms.append(Permission.WRITE_EXTERNAL_STORAGE)
             request_permissions(perms, self._on_permissions_result)
+
+            # MANAGE_EXTERNAL_STORAGE permite leer TODO el teléfono
+            # Requiere abrir ajustes manualmente en Android 11+
+            try:
+                from jnius import autoclass  # type: ignore
+                Environment    = autoclass("android.os.Environment")
+                if not Environment.isExternalStorageManager():
+                    Intent         = autoclass("android.content.Intent")
+                    Settings       = autoclass("android.provider.Settings")
+                    Uri            = autoclass("android.net.Uri")
+                    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                    intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                    intent.setData(Uri.parse(
+                        f"package:{PythonActivity.mActivity.getPackageName()}"
+                    ))
+                    PythonActivity.mActivity.startActivity(intent)
+            except Exception as e:
+                self._log(f"MANAGE_EXTERNAL_STORAGE: {e}")
+
         except Exception as exc:
             self._log(f"Permisos: {exc}")
 
@@ -753,16 +768,16 @@ class ClipForgeApp(MDApp):
             from kivy.uix.filechooser  import FileChooserListView
             from kivy.uix.label        import Label
 
-            # Ruta inicial
+            # Ruta inicial — almacenamiento interno del teléfono
             try:
                 if sys.platform == "android":
-                    from jnius import autoclass  # type: ignore
-                    Env = autoclass("android.os.Environment")
-                    start = Env.getExternalStorageDirectory().getAbsolutePath()
+                    start = "/storage/emulated/0"
+                    if not os.path.exists(start):
+                        start = "/"
                 else:
                     start = str(Path.home())
             except Exception:
-                start = "/sdcard" if sys.platform == "android" else str(Path.home())
+                start = "/"
 
             layout = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(6))
 
@@ -776,8 +791,9 @@ class ClipForgeApp(MDApp):
 
             chooser = FileChooserListView(
                 path=start,
-                filters=filters,
+                filters=[] if sys.platform == "android" else filters,
                 size_hint_y=1,
+                show_hidden=False,
             )
 
             btn_row = BoxLayout(
