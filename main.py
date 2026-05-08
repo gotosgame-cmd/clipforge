@@ -104,16 +104,42 @@ class DriveUploader:
 
 
 # ── ScrollView que acepta touch desde cualquier punto ────────────────────────
+from kivy.uix.scrollview import ScrollView
+from kivy.factory import Factory
+
 class TouchScrollView(ScrollView):
-    """ScrollView que prioriza el scroll sobre los widgets hijos."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.do_scroll_x   = False
+        self.do_scroll_y   = True
+        self.scroll_type   = ['bars', 'content']
+        self.bar_width     = dp(3)
+        self.smooth_scroll_end = 10
+
+    def on_touch_down(self, touch):
+        # Guardar posición inicial para detectar si es scroll o tap
+        touch.ud['scroll_start_y'] = touch.y
+        touch.ud['scroll_start_x'] = touch.x
+        return super().on_touch_down(touch)
+
     def on_touch_move(self, touch):
-        if self.collide_point(*touch.pos):
-            touch.push()
-            touch.apply_transform_2d(self.to_local)
-            ret = super().on_touch_move(touch)
-            touch.pop()
-            return ret
-        return False
+        # Si el dedo se movió más de 10px verticalmente, es scroll
+        if 'scroll_start_y' in touch.ud:
+            dy = abs(touch.y - touch.ud['scroll_start_y'])
+            dx = abs(touch.x - touch.ud['scroll_start_x'])
+            if dy > 10 and dy > dx:
+                touch.ud['in_scroll'] = True
+                # Forzar scroll sin importar qué widget está debajo
+                if self.collide_point(*touch.pos):
+                    self.scroll_y -= touch.dy / self.height
+                    self.scroll_y  = max(0, min(1, self.scroll_y))
+                    return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        return super().on_touch_up(touch)
+
+Factory.register('TouchScrollView', cls=TouchScrollView)
 
 
 # ── KV Layout ────────────────────────────────────────────────────────────────
@@ -170,7 +196,7 @@ KV = """
 MDScreen:
     md_bg_color: app.c_bg
 
-    FullScroll:
+    TouchScrollView:
         id: main_scroll
 
         MDBoxLayout:
