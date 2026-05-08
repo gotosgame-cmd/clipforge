@@ -18,6 +18,7 @@ from kivy.clock   import Clock
 from kivy.lang    import Builder
 from kivy.metrics import dp, sp
 from kivy.uix.image import Image as KivyImage
+from kivy.uix.scrollview import ScrollView
 
 from kivymd.app          import MDApp
 from kivymd.uix.button   import MDRaisedButton, MDFlatButton
@@ -102,10 +103,24 @@ class DriveUploader:
         return service.files().create(body=metadata, media_body=media, fields="id,name,webViewLink").execute()
 
 
+# ── ScrollView que acepta touch desde cualquier punto ────────────────────────
+class TouchScrollView(ScrollView):
+    """ScrollView que prioriza el scroll sobre los widgets hijos."""
+    def on_touch_move(self, touch):
+        if self.collide_point(*touch.pos):
+            touch.push()
+            touch.apply_transform_2d(self.to_local)
+            ret = super().on_touch_move(touch)
+            touch.pop()
+            return ret
+        return False
+
+
 # ── KV Layout ────────────────────────────────────────────────────────────────
 KV = """
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
+#:import TouchScrollView __main__.TouchScrollView
 
 <SectionCard@MDCard>:
     orientation: 'vertical'
@@ -147,15 +162,15 @@ KV = """
 MDScreen:
     md_bg_color: app.c_bg
 
-    ScrollView:
+    TouchScrollView:
         id: main_scroll
         do_scroll_x: False
         do_scroll_y: True
-        bar_width: dp(4)
+        bar_width: dp(3)
         bar_color: app.c_muted
         bar_inactive_color: [0,0,0,0]
         scroll_type: ['bars', 'content']
-        effect_cls: 'ScrollEffect'
+        smooth_scroll_end: 10
 
         MDBoxLayout:
             orientation: 'vertical'
@@ -716,25 +731,33 @@ class ClipForgeApp(MDApp):
 
     # ── Selectores de archivos ───────────────────────────────────────────────
     def pick_video(self):
-        if sys.platform == "android":
-            self._pick_android("video/*", self._on_video_selected)
-        elif PLYER_OK:
-            filechooser.open_file(
-                on_selection=self._on_video_selected,
-                filters=["*.mp4", "*.mov", "*.mkv", "*.avi", "*.m4v"],
-                multiple=False,
-            )
-        else:
-            self._show_dialog("Error", "plyer no disponible. Instala: pip install plyer")
+        try:
+            if sys.platform == "android":
+                from plyer import filechooser  # type: ignore
+                filechooser.open_file(
+                    on_selection=self._on_video_selected,
+                    filters=["video/*"],
+                    multiple=False,
+                )
+            elif PLYER_OK:
+                filechooser.open_file(
+                    on_selection=self._on_video_selected,
+                    filters=["*.mp4", "*.mov", "*.mkv", "*.avi", "*.m4v"],
+                    multiple=False,
+                )
+            else:
+                self._show_dialog("Error", "plyer no disponible.")
+        except Exception as exc:
+            import traceback
+            self._show_dialog("Error al abrir video", traceback.format_exc())
 
     def _pick_android(self, mime_type, callback):
-        """Selector de archivos nativo usando FileChooserActivity de Kivy Android."""
+        """Selector robusto para Android 13+ usando Intent nativo."""
         try:
             from android import activity  # type: ignore
             from jnius import autoclass   # type: ignore
 
-            self._pending_callback  = callback
-            self._pending_mime      = mime_type
+            self._pending_callback = callback
 
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             Intent         = autoclass("android.content.Intent")
@@ -742,111 +765,105 @@ class ClipForgeApp(MDApp):
             intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
             intent.setType(mime_type)
             intent.addCategory(Intent.CATEGORY_OPENABLE)
-            intent.putExtra(Intent.EXTRA_LOCAL_ONLY, True)
+            # FLAG_GRANT_READ_URI_PERMISSION permite leer el archivo después
+            intent.addFlags(1)  # FLAG_GRANT_READ_URI_PERMISSION = 1
 
-            # Registrar callback ANTES de lanzar el intent
             activity.bind(on_activity_result=self._on_activity_result)
             PythonActivity.mActivity.startActivityForResult(intent, 1001)
 
         except Exception as exc:
             import traceback
-            self._show_dialog("Error abriendo selector", traceback.format_exc())
+            err = traceback.format_exc()
+            self._log(f"Error selector: {err}")
+            self._show_dialog("Error al abrir selector", str(exc))
 
-    def _on_activity_result(self, request_code, result_code, intent):
+    def _on_activity_result(self, request_code, result_code, data):
+        """Callback cuando el selector de archivos regresa."""
         try:
             from android import activity  # type: ignore
             activity.unbind(on_activity_result=self._on_activity_result)
 
-            RESULT_OK = -1
-            if result_code != RESULT_OK or intent is None:
-                self._log("Selector cancelado o sin resultado")
+            self._log(f"Activity result: code={request_code} result={result_code}")
+
+            # RESULT_OK = -1 en Java/Android
+            if result_code != -1:
+                self._log("Selector cancelado por el usuario")
                 return
 
-            uri = intent.getData()
+            if data is None:
+                self._show_dialog("Sin datos", "El selector no devolvió datos")
+                return
+
+            uri = data.getData()
             if uri is None:
-                self._show_dialog("Error", "No se obtuvo URI del archivo")
+                self._show_dialog("Sin URI", "No se obtuvo URI del archivo")
                 return
 
-            # Tomar persistencia del URI para accederlo luego
-            try:
-                from jnius import autoclass  # type: ignore
-                PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                flags = intent.getFlags()
-                from jnius import autoclass as jcls
-                Intent = jcls("android.content.Intent")
-                persist_flags = (
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION |
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-                PythonActivity.mActivity.getContentResolver().takePersistableUriPermission(
-                    uri, persist_flags & flags
-                )
-            except Exception:
-                pass  # No crítico
+            uri_str = uri.toString()
+            self._log(f"URI: {uri_str}")
 
-            self._log(f"URI recibido: {uri.toString()}")
-            path = self._uri_to_path(uri)
-            self._log(f"Ruta resuelta: {path}")
-
-            if path and hasattr(self, "_pending_callback"):
-                Clock.schedule_once(lambda dt: self._pending_callback([path]))
+            # Copiar a temp para tener ruta real accesible
+            path = self._copy_uri_to_temp(uri)
+            if path:
+                self._log(f"Archivo copiado a: {path}")
+                callback = getattr(self, "_pending_callback", None)
+                if callback:
+                    Clock.schedule_once(lambda dt: callback([path]))
             else:
-                self._show_dialog("Error", "No se pudo obtener la ruta del archivo")
+                self._show_dialog(
+                    "Error leyendo archivo",
+                    "No se pudo copiar el archivo seleccionado.\n"
+                    "Verifica que la app tiene permisos de almacenamiento."
+                )
 
         except Exception as exc:
             import traceback
-            self._show_dialog("Error activity result", traceback.format_exc())
+            err = traceback.format_exc()
+            self._log(f"Error en activity result:\n{err}")
+            self._show_dialog("Error interno", str(exc))
 
-    def _uri_to_path(self, uri) -> Optional[str]:
-        """Convierte un Android URI a ruta de archivo."""
+    def _copy_uri_to_temp(self, uri) -> Optional[str]:
+        """Copia un archivo desde URI de Android a un archivo temporal accesible."""
         try:
             from jnius import autoclass  # type: ignore
-            context_class  = autoclass("android.content.Context")
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            context        = PythonActivity.mActivity
 
-            # Intentar resolver como ruta real
-            cursor = context.getContentResolver().query(uri, None, None, None, None)
-            if cursor and cursor.moveToFirst():
-                idx = cursor.getColumnIndex("_data")
-                if idx >= 0:
-                    path = cursor.getString(idx)
-                    cursor.close()
-                    if path:
-                        return path
-                cursor.close()
+            PythonActivity  = autoclass("org.kivy.android.PythonActivity")
+            FileOutputStream = autoclass("java.io.FileOutputStream")
 
-            # Fallback: copiar a temporal
-            return self._copy_uri_to_temp(uri, context)
-        except Exception as exc:
-            self._log(f"URI a ruta falló: {exc}")
-            return str(uri)
+            context      = PythonActivity.mActivity
+            resolver     = context.getContentResolver()
+            input_stream = resolver.openInputStream(uri)
 
-    def _copy_uri_to_temp(self, uri, context) -> Optional[str]:
-        """Copia un archivo desde URI a un temp file accesible."""
-        try:
-            from jnius import autoclass  # type: ignore
-            import shutil as _shutil
+            if input_stream is None:
+                self._log("No se pudo abrir el stream del URI")
+                return None
 
-            input_stream = context.getContentResolver().openInputStream(uri)
-            suffix = ".mp4"
-            fd, temp_path = tempfile.mkstemp(suffix=suffix, dir=self.app_data_dir)
+            # Determinar extensión por mime type
+            mime = resolver.getType(uri)
+            ext  = ".mp4"
+            if mime and "image" in mime:
+                ext = ".jpg" if "jpeg" in mime else ".png"
+
+            self.app_data_dir.mkdir(parents=True, exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(suffix=ext, dir=str(self.app_data_dir))
             os.close(fd)
 
-            # Leer en chunks
-            FileOutputStream = autoclass("java.io.FileOutputStream")
             fos = FileOutputStream(temp_path)
-            buf = bytearray(65536)
+            buf = bytearray(131072)  # 128KB chunks
             while True:
                 n = input_stream.read(buf)
                 if n < 0:
                     break
                 fos.write(buf, 0, n)
+            fos.flush()
             fos.close()
             input_stream.close()
+
             return temp_path
+
         except Exception as exc:
-            self._log(f"Copia temporal falló: {exc}")
+            import traceback
+            self._log(f"Error copiando URI a temp:\n{traceback.format_exc()}")
             return None
 
     def _on_video_selected(self, selection):
@@ -893,16 +910,24 @@ class ClipForgeApp(MDApp):
         self._log(f"Salida: {path}")
 
     def pick_wm(self):
-        if sys.platform == "android":
-            self._pick_android("image/*", self._on_wm_selected)
-        elif PLYER_OK:
-            filechooser.open_file(
-                on_selection=self._on_wm_selected,
-                filters=["*.png", "*.jpg", "*.jpeg"],
-                multiple=False,
-            )
-        else:
-            self._show_dialog("Error", "plyer no disponible.")
+        try:
+            if sys.platform == "android":
+                from plyer import filechooser  # type: ignore
+                filechooser.open_file(
+                    on_selection=self._on_wm_selected,
+                    filters=["image/*"],
+                    multiple=False,
+                )
+            elif PLYER_OK:
+                filechooser.open_file(
+                    on_selection=self._on_wm_selected,
+                    filters=["*.png", "*.jpg", "*.jpeg"],
+                    multiple=False,
+                )
+            else:
+                self._show_dialog("Error", "plyer no disponible.")
+        except Exception as exc:
+            self._show_dialog("Error al abrir imagen", str(exc))
 
     def _on_wm_selected(self, selection):
         if not selection:
