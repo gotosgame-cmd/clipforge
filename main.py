@@ -734,21 +734,29 @@ class ClipForgeApp(MDApp):
     def pick_video(self):
         try:
             from plyer import filechooser as fc
-            if sys.platform == "android":
-                fc.open_file(
-                    on_selection=self._on_video_selected,
-                    filters=["video/*"],
-                    multiple=False,
-                )
-            else:
-                fc.open_file(
-                    on_selection=self._on_video_selected,
-                    filters=["*.mp4", "*.mov", "*.mkv", "*.avi", "*.m4v"],
-                    multiple=False,
-                )
+
+            def _on_selection(selection):
+                try:
+                    if not selection:
+                        self._log("Selección cancelada o vacía")
+                        return
+                    path = selection[0]
+                    self._log(f"Seleccionado: {path}")
+                    Clock.schedule_once(lambda dt: self._on_video_selected([path]))
+                except Exception as e:
+                    import traceback
+                    Clock.schedule_once(lambda dt: self._show_dialog(
+                        "Error en selección", traceback.format_exc()
+                    ))
+
+            fc.open_file(
+                on_selection=_on_selection,
+                filters=["video/*"] if sys.platform == "android" else ["*.mp4", "*.mov", "*.mkv"],
+                multiple=False,
+            )
         except Exception as exc:
             import traceback
-            self._show_dialog("Error al abrir video", traceback.format_exc())
+            self._show_dialog("Error pick_video", traceback.format_exc())
 
     def _pick_android(self, mime_type, callback):
         """Selector robusto para Android 13+ usando Intent nativo."""
@@ -869,10 +877,15 @@ class ClipForgeApp(MDApp):
         if not selection:
             return
         path = selection[0]
-        Clock.schedule_once(lambda dt: setattr(self.root.ids.video_field, "text", path))
         self._log(f"Video: {path}")
-        self._update_status("Generando vista previa...")
-        threading.Thread(target=self._generate_preview, args=(path,), daemon=True).start()
+        Clock.schedule_once(lambda dt: setattr(self.root.ids.video_field, "text", path))
+        self._update_status("Video seleccionado ✓")
+        # Solo genera preview si ffmpeg existe
+        if self.ffmpeg.exists():
+            self._update_status("Generando vista previa...")
+            threading.Thread(target=self._generate_preview, args=(path,), daemon=True).start()
+        else:
+            self._log("ffmpeg no encontrado — sin vista previa")
 
     def pick_out(self):
         if sys.platform == "android":
