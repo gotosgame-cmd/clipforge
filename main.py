@@ -1,6 +1,6 @@
 # main.py
 # ClipForge Studio - APK Android estable
-# La app primero abre. No pide permisos ni ejecuta ffmpeg durante el loading.
+# Abre la app sin crashear y usa selector nativo Android para video/imagen.
 
 import os
 import sys
@@ -12,10 +12,6 @@ import threading
 import subprocess
 from pathlib import Path
 
-
-# ============================================================
-# GUARDAR ERRORES SI LA APK SE CIERRA
-# ============================================================
 
 def guardar_error(exc_type, exc_value, exc_tb):
     try:
@@ -40,10 +36,6 @@ def guardar_error(exc_type, exc_value, exc_tb):
 
 sys.excepthook = guardar_error
 
-
-# ============================================================
-# KIVY IMPORTS
-# ============================================================
 
 from kivy.config import Config
 
@@ -89,7 +81,6 @@ class UserCancelled(Exception):
 
 class ClipForgeApp(App):
     def build(self):
-        # Nada pesado aquí. Así evitamos crash en loading.
         Window.clearcolor = (0.05, 0.07, 0.10, 1)
 
         self.bg = (0.05, 0.07, 0.10, 1)
@@ -115,10 +106,12 @@ class ClipForgeApp(App):
         self.ffmpeg = None
         self.ffprobe = None
 
+        self._android_picker_callback = None
+        self._android_picker_mime = None
+
         return self.crear_interfaz()
 
     def on_start(self):
-        # La app ya abrió. Ahora hacemos cosas livianas.
         Clock.schedule_once(lambda dt: self.post_inicio(), 0.5)
 
     def post_inicio(self):
@@ -131,10 +124,10 @@ class ClipForgeApp(App):
         self.status("App lista")
         self.log("ClipForge iniciado correctamente")
         self.log("Toca Buscar para seleccionar un video")
-        self.log("Nota: ffmpeg se revisa solo al generar, no al abrir")
+        self.log("El selector nativo Android se usara para escoger archivos")
 
     # ========================================================
-    # RUTAS SEGURAS
+    # RUTAS
     # ========================================================
 
     def safe_base_dir(self):
@@ -423,7 +416,7 @@ class ClipForgeApp(App):
         return btn
 
     # ========================================================
-    # BOTONES Y POPUPS
+    # SLIDERS Y POPUPS
     # ========================================================
 
     def on_duration_change(self, instance, value):
@@ -479,42 +472,174 @@ class ClipForgeApp(App):
         popup.open()
 
     # ========================================================
-    # ARCHIVOS
+    # SELECTOR ANDROID
     # ========================================================
 
-    def set_default_output(self):
-        try:
-            if sys.platform == "android":
-                out = Path("/storage/emulated/0/Movies/ClipForge")
-            else:
-                out = Path.home() / "Videos" / "ClipForge"
-
-            try:
-                out.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-
-            self.out_field.text = str(out)
-        except Exception:
-            self.out_field.text = str(self.app_data_dir)
-
     def pick_video(self):
-        self.scan_popup(
-            "Seleccionar video",
-            (".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm"),
-            self.on_video_selected,
-        )
+        if sys.platform == "android":
+            self.android_file_picker("video/*", self.on_video_selected)
+        else:
+            self.scan_popup(
+                "Seleccionar video",
+                (".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm"),
+                self.on_video_selected,
+            )
 
     def pick_watermark(self):
-        self.scan_popup(
-            "Seleccionar imagen",
-            (".png", ".jpg", ".jpeg", ".webp"),
-            self.on_watermark_selected,
-        )
+        if sys.platform == "android":
+            self.android_file_picker("image/*", self.on_watermark_selected)
+        else:
+            self.scan_popup(
+                "Seleccionar imagen",
+                (".png", ".jpg", ".jpeg", ".webp"),
+                self.on_watermark_selected,
+            )
 
-    def pick_output(self):
-        self.set_default_output()
-        self.dialog("Carpeta de salida", f"Los clips se guardaran en:\n{self.out_field.text}")
+    def android_file_picker(self, mime_type, callback):
+        try:
+            from android import activity
+            from jnius import autoclass
+
+            Intent = autoclass("android.content.Intent")
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+
+            self._android_picker_callback = callback
+            self._android_picker_mime = mime_type
+
+            intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            intent.addCategory(Intent.CATEGORY_OPENABLE)
+            intent.setType(mime_type)
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+
+            activity.bind(on_activity_result=self._on_android_file_selected)
+
+            PythonActivity.mActivity.startActivityForResult(
+                Intent.createChooser(intent, "Seleccionar archivo"),
+                1001,
+            )
+
+        except Exception as exc:
+            self.dialog("Error", f"No se pudo abrir el selector Android:\n{exc}")
+            self.log(f"Error selector Android: {exc}")
+
+    def _on_android_file_selected(self, request_code, result_code, data):
+        try:
+            from android import activity
+            activity.unbind(on_activity_result=self._on_android_file_selected)
+
+            if request_code != 1001:
+                return
+
+            if result_code != -1:
+                self.log("Selector cancelado")
+                return
+
+            if data is None:
+                self.dialog("Error", "El selector no devolvio ningun archivo")
+                return
+
+            uri = data.getData()
+
+            if uri is None:
+                self.dialog("Error", "No se pudo obtener la URI del archivo")
+                return
+
+            self.log(f"Archivo seleccionado URI: {uri.toString()}")
+
+            def copiar():
+                try:
+                    path = self.copy_android_uri_to_file(uri)
+                    callback = getattr(self, "_android_picker_callback", None)
+
+                    if path and callback:
+                        Clock.schedule_once(lambda dt: callback(path), 0)
+                    else:
+                        Clock.schedule_once(
+                            lambda dt: self.dialog("Error", "No se pudo copiar el archivo seleccionado"),
+                            0,
+                        )
+
+                except Exception:
+                    err = traceback.format_exc()
+                    Clock.schedule_once(lambda dt: self.dialog("Error copiando archivo", err), 0)
+
+            threading.Thread(target=copiar, daemon=True).start()
+
+        except Exception:
+            self.dialog("Error", traceback.format_exc())
+
+    def copy_android_uri_to_file(self, uri):
+        from jnius import autoclass
+
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        FileOutputStream = autoclass("java.io.FileOutputStream")
+
+        context = PythonActivity.mActivity
+        resolver = context.getContentResolver()
+
+        try:
+            Intent = autoclass("android.content.Intent")
+            resolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        except Exception:
+            pass
+
+        input_stream = resolver.openInputStream(uri)
+
+        if input_stream is None:
+            raise RuntimeError("No se pudo abrir el archivo seleccionado")
+
+        mime = resolver.getType(uri) or ""
+
+        if "image" in mime:
+            if "png" in mime:
+                ext = ".png"
+            elif "webp" in mime:
+                ext = ".webp"
+            else:
+                ext = ".jpg"
+        else:
+            if "quicktime" in mime:
+                ext = ".mov"
+            elif "x-matroska" in mime:
+                ext = ".mkv"
+            elif "webm" in mime:
+                ext = ".webm"
+            else:
+                ext = ".mp4"
+
+        try:
+            self.app_data_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        temp_name = "clipforge_selected_" + str(int(time.time())) + ext
+        temp_path = self.app_data_dir / temp_name
+
+        output_stream = FileOutputStream(str(temp_path))
+
+        buffer = bytearray(1024 * 1024)
+
+        while True:
+            n = input_stream.read(buffer)
+
+            if n == -1 or n < 0:
+                break
+
+            output_stream.write(buffer, 0, n)
+
+        output_stream.flush()
+        output_stream.close()
+        input_stream.close()
+
+        return str(temp_path)
+
+    # ========================================================
+    # FALLBACK PARA PC
+    # ========================================================
 
     def scan_popup(self, title, extensions, callback):
         layout = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(8))
@@ -557,7 +682,7 @@ class ClipForgeApp(App):
                 if not files:
                     status.text = "No se encontraron archivos"
                     grid.add_widget(Label(
-                        text="No se encontraron archivos.\nRevisa permisos de almacenamiento.",
+                        text="No se encontraron archivos.",
                         color=(1, 0.45, 0.45, 1),
                         size_hint_y=None,
                         height=dp(100),
@@ -590,21 +715,11 @@ class ClipForgeApp(App):
         threading.Thread(target=scan_thread, daemon=True).start()
 
     def scan_files(self, extensions):
-        if sys.platform == "android":
-            roots = [
-                "/storage/emulated/0/DCIM",
-                "/storage/emulated/0/Movies",
-                "/storage/emulated/0/Download",
-                "/storage/emulated/0/Pictures",
-                "/storage/emulated/0/WhatsApp/Media/WhatsApp Video",
-                "/storage/emulated/0/WhatsApp/Media/WhatsApp Images",
-            ]
-        else:
-            roots = [
-                str(Path.home() / "Videos"),
-                str(Path.home() / "Downloads"),
-                str(Path.home() / "Pictures"),
-            ]
+        roots = [
+            str(Path.home() / "Videos"),
+            str(Path.home() / "Downloads"),
+            str(Path.home() / "Pictures"),
+        ]
 
         found = []
 
@@ -632,15 +747,35 @@ class ClipForgeApp(App):
 
         return found[:200]
 
+    def set_default_output(self):
+        try:
+            if sys.platform == "android":
+                out = Path("/storage/emulated/0/Movies/ClipForge")
+            else:
+                out = Path.home() / "Videos" / "ClipForge"
+
+            try:
+                out.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+            self.out_field.text = str(out)
+        except Exception:
+            self.out_field.text = str(self.app_data_dir)
+
+    def pick_output(self):
+        self.set_default_output()
+        self.dialog("Carpeta de salida", f"Los clips se guardaran en:\n{self.out_field.text}")
+
     def on_video_selected(self, path):
         self.video_field.text = path
         self.status("Video seleccionado")
-        self.log(f"Video: {path}")
+        self.log(f"Video copiado: {path}")
 
     def on_watermark_selected(self, path):
         self.wm_field.text = path
         self.status("Marca de agua seleccionada")
-        self.log(f"Marca de agua: {path}")
+        self.log(f"Marca de agua copiada: {path}")
 
     # ========================================================
     # VALIDACION Y FFMPEG
