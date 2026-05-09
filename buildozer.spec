@@ -27,7 +27,9 @@ requirements =
     cachetools,
     pyasn1,
     pyasn1-modules,
-    rsa
+    rsa,
+    pyjnius,
+    android
 
 orientation = portrait
 fullscreen = 0
