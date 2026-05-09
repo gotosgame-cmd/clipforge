@@ -1,6 +1,7 @@
 # main.py
 # ClipForge Studio - APK Android estable
-# Abre la app sin crashear y usa selector nativo Android para video/imagen.
+# Corregido: usa kivy.utils.platform para detectar Android
+# Boton Buscar abre selector nativo Android, no escanea carpetas.
 
 import os
 import sys
@@ -12,6 +13,10 @@ import threading
 import subprocess
 from pathlib import Path
 
+
+# ============================================================
+# GUARDAR ERRORES SI LA APK SE CIERRA
+# ============================================================
 
 def guardar_error(exc_type, exc_value, exc_tb):
     try:
@@ -37,6 +42,10 @@ def guardar_error(exc_type, exc_value, exc_tb):
 sys.excepthook = guardar_error
 
 
+# ============================================================
+# KIVY
+# ============================================================
+
 from kivy.config import Config
 
 Config.set("graphics", "width", "420")
@@ -48,6 +57,7 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.core.window import Window
+from kivy.utils import platform
 
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -59,6 +69,10 @@ from kivy.uix.slider import Slider
 from kivy.uix.progressbar import ProgressBar
 from kivy.uix.popup import Popup
 
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 QUALITY_PRESETS = {
     "Alta": {"preset": "slow", "crf": "17"},
@@ -123,8 +137,9 @@ class ClipForgeApp(App):
         self.set_default_output()
         self.status("App lista")
         self.log("ClipForge iniciado correctamente")
+        self.log(f"Plataforma detectada: {platform}")
         self.log("Toca Buscar para seleccionar un video")
-        self.log("El selector nativo Android se usara para escoger archivos")
+        self.log("En Android se abrira el selector nativo de archivos")
 
     # ========================================================
     # RUTAS
@@ -138,7 +153,7 @@ class ClipForgeApp(App):
 
     def safe_data_dir(self):
         try:
-            if sys.platform == "android":
+            if platform == "android":
                 return Path("/storage/emulated/0/ClipForgeStudio")
             return Path.home() / ".clipforge_studio"
         except Exception:
@@ -161,7 +176,7 @@ class ClipForgeApp(App):
         for path in candidates:
             try:
                 if path.exists():
-                    if sys.platform == "android":
+                    if platform == "android":
                         try:
                             os.chmod(str(path), 0o755)
                         except Exception:
@@ -472,11 +487,12 @@ class ClipForgeApp(App):
         popup.open()
 
     # ========================================================
-    # SELECTOR ANDROID
+    # SELECTOR NATIVO ANDROID
     # ========================================================
 
     def pick_video(self):
-        if sys.platform == "android":
+        if platform == "android":
+            self.log("Abriendo selector Android para video...")
             self.android_file_picker("video/*", self.on_video_selected)
         else:
             self.scan_popup(
@@ -486,7 +502,8 @@ class ClipForgeApp(App):
             )
 
     def pick_watermark(self):
-        if sys.platform == "android":
+        if platform == "android":
+            self.log("Abriendo selector Android para imagen...")
             self.android_file_picker("image/*", self.on_watermark_selected)
         else:
             self.scan_popup(
@@ -509,6 +526,7 @@ class ClipForgeApp(App):
             intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
             intent.addCategory(Intent.CATEGORY_OPENABLE)
             intent.setType(mime_type)
+
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
 
@@ -546,6 +564,7 @@ class ClipForgeApp(App):
                 return
 
             self.log(f"Archivo seleccionado URI: {uri.toString()}")
+            self.status("Copiando archivo seleccionado...")
 
             def copiar():
                 try:
@@ -747,9 +766,13 @@ class ClipForgeApp(App):
 
         return found[:200]
 
+    # ========================================================
+    # ARCHIVOS
+    # ========================================================
+
     def set_default_output(self):
         try:
-            if sys.platform == "android":
+            if platform == "android":
                 out = Path("/storage/emulated/0/Movies/ClipForge")
             else:
                 out = Path.home() / "Videos" / "ClipForge"
